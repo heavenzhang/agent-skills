@@ -1,0 +1,4 @@
+interface:
+  display_name: "Handoff Sync"
+  short_description: "Write and resume project handoff notes across devices."
+  default_prompt: "Use handoff-sync to update or resume codex-handoff.md for this project."
