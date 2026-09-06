@@ -1,0 +1,7 @@
+interface:
+  display_name: "AI 开发团队"
+  short_description: "按任务风险与总成本自主选择单线程或多智能体，完成开发与验收"
+  default_prompt: "Use $dev-team to choose cost-effective single-agent or parallel execution for this platform task, with suitable models and reasoning effort, one accountable owner, verified acceptance, and any authorized deployment."
+
+policy:
+  allow_implicit_invocation: true
