@@ -88,7 +88,7 @@ Use `gpt-6-astra` as a worker only when the user explicitly requests it, no suit
 
 When explicit model overrides are available, pass the selected model and reasoning effort when spawning the worker. Otherwise, rely on the configured worker default and disclose material routing limitations in the final report.
 
-Track model effectiveness when the runtime exposes the data. For each substantial package, record the model and effort, token or product-usage measure, elapsed time, first-pass acceptance result, repair rounds, and material defects found later. Compare cost per accepted package, not cost per call, and adjust future routing from observed results rather than assumed capability.
+Capture reporting evidence while working: actual participant identifiers and roles, package ownership, requested model/effort and any runtime-confirmed values, acceptance outcomes, and repair rounds. Add timing and token/product usage when exposed. Keep this in the task plan for small runs or the lightweight ledger for larger ones; do not wait until the end and reconstruct facts from unrelated session history. Compare cost per accepted package, not cost per call, and adjust future routing from observed results rather than assumed capability.
 
 For large tool outputs or multi-wave work that benefits from durable progress and usage records, read [references/lean-execution.md](references/lean-execution.md). Prefer deterministic preprocessing, compact evidence-bearing handoffs, and a small primary-owned ledger. Keep measured usage separate from estimates and never import full session transcripts solely for accounting.
 
@@ -165,20 +165,11 @@ Keep production acceptance read-only unless the user explicitly authorizes a bus
 
 ## Report the outcome
 
-Return one consolidated report containing:
+Every completed or blocked dev-team task must end with a user-visible collaboration execution report and a short retrospective, following [references/execution-report.md](references/execution-report.md). Include single-agent runs explicitly; never spawn workers just to populate the report.
 
-- what was delivered;
-- chosen execution mode and the actual model/effort routing when relevant, without inventing usage figures or a successful model switch;
-- how the work was divided;
-- model and reasoning-effort allocation, plus available usage and retry evidence;
-- shared-context reuse, stale refreshes, and available size/count proxies when caching was used; do not report unmeasured token savings;
-- changed files or artifacts;
-- tests and integration checks with results;
-- deployment target and evidence, if deployment was authorized;
-- user-path acceptance evidence, if applicable;
-- open risks, skipped gates, and exact next action.
+Lead with the delivered result and remaining gates. Show the actual participants, their roles and work packages, model tier/exact identifier and reasoning effort with provenance, acceptance results, and repair rounds. Include available timing, usage, and shared-context evidence without equating proxies to tokens or cost savings. The retrospective must explain what worked, where coordination or repairs cost effort, and one concrete adjustment for similar future work.
 
-Do not make the user reconstruct the result from individual agent threads.
+Keep routine single-agent reports to a few lines and multi-agent reports to one compact table plus evidence and retrospective. Omit inapplicable details, label unavailable values unknown, and never claim that a configured/requested model was the runtime model without confirmation. Link changed artifacts, relevant checks, deployment and user-path evidence when in scope. Do not make the user reconstruct the result from individual agent threads or hide a failed gate behind a favorable retrospective.
 
 ## Adapt external workflows selectively
 

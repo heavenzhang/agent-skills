@@ -17,6 +17,8 @@ Use $dev-team to implement this feature and verify it against the acceptance cri
 
 The primary chooses whether delegation is worthwhile. Architecture and high-risk acceptance prefer GPT-6 Astra; bounded workers use suitable GPT-5.6 variants when the runtime supports them. Model switching and concurrency depend on the actual host capabilities; the skill does not change your global model settings or guarantee a switch.
 
+Every task ends with a [collaboration execution report and retrospective](dev-team/references/execution-report.md), including single-agent tasks. It records the actual participants, requested or runtime-confirmed models and reasoning efforts, responsibilities, acceptance and repair results, available efficiency evidence, and a concrete lesson for future work. Missing model/usage information stays explicitly unknown.
+
 The optional shared-context tool uses Python 3.9+ with the standard library, including SQLite. It stores compact summaries and source/dependency fingerprints under the user's `.codex/cache/dev-team/` directory, isolated by project root. Runtime caches, logs, credentials, session histories, and user-level Codex configuration are not included in this repository. See [shared context](dev-team/references/shared-context.md) and [lean execution](dev-team/references/lean-execution.md) for the scoped workflow and limitations.
 
 Run the included cache tests from the repository root:
