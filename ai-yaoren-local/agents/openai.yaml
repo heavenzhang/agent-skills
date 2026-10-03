@@ -1,0 +1,7 @@
+interface:
+  display_name: "AI Yaoren Local · 本地摇人"
+  short_description: "通过 Codex 内置智能体按任务风险与总成本组织开发、验收和协作复盘"
+  default_prompt: "Use $ai-yaoren-local to choose cost-effective single-agent or parallel Codex-native execution for this platform task, verify acceptance, and finish with a collaboration report showing model/effort provenance, responsibilities, results, and an execution retrospective."
+
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,8 @@
+interface:
+  display_name: "AI Yaoren · 赛博摇人"
+  short_description: "混合调度 AI Router 外部模型与 Codex 内置智能体"
+  brand_color: "#2563EB"
+  default_prompt: "Use $ai-yaoren to build a hybrid team from AIRouter-preferred external models and appropriately tiered Codex-native workers, then verify and integrate the results."
+
+policy:
+  allow_implicit_invocation: true

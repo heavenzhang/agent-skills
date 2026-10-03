@@ -7,6 +7,14 @@ Personal Codex skills for syncing across machines.
 - `handoff-sync`: Maintain `codex-handoff.md` so Codex can hand off project context across Mac, Windows, synced folders, Git branches, or fresh threads.
 - [`dev-team`](dev-team/SKILL.md): Choose cost-aware single-agent or parallel software development, route models by task difficulty, share fingerprint-validated file summaries, and iterate repairs until primary-agent acceptance passes.
 
+Migrated from `SomeSkills4Agents/skills/` (2026-10-03):
+
+- [`ai-yaoren`](ai-yaoren/SKILL.md): Orchestrate a hybrid AI team from AIRouter-preferred external models and Codex-native models; invoke with `$ai-yaoren`.
+- [`ai-yaoren-local`](ai-yaoren-local/SKILL.md): Organize Codex-native agents for cost-aware software delivery; invoke with `$ai-yaoren-local`.
+- [`everyday-visual-design`](everyday-visual-design/SKILL.md): Create or review visual arrangement of text and images based on four design principles, typography, and color.
+- [`git-project-sync`](git-project-sync/SKILL.md): Use an explicitly supplied Git repository as the durable record for continuous development across agents, threads, machines, or worktrees.
+- [`mori-dispatch`](mori-dispatch/SKILL.md): Dispatch tasks to Mori digital employees via verified MCP or HTTP API channels, with user-driven employee selection.
+
 ## Using dev-team
 
 Install the `dev-team` folder with the same copy/link procedure below, replacing `handoff-sync` with `dev-team`. Keep its `agents`, `references`, and `scripts` subdirectories together. Then invoke:
