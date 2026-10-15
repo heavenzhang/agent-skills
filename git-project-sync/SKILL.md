@@ -1,11 +1,13 @@
 ---
 name: git-project-sync
-description: Require an explicitly supplied Git repository URL as the durable record and save target for continuous development across agents, threads, machines, or worktrees. Establish a committed project map, shared plan, and branch-specific handoff records so another agent can find the latest code, decisions, tests, and next step. Use when binding a project, starting work, resuming, handing off, or integrating branches. Do not use it as deployment authorization or as a substitute for runtime data, secrets, or artifact storage.
+description: Coordinate continuous development across agents, chats, machines, and worktrees using a user-supplied Git repository URL, committed project map, shared plan, and task handoffs. Let development chats commit independently while one designated deployment chat owns releases. Use when binding, starting, resuming, handing off, integrating, or coordinating deployment ownership. Does not grant deployment authorization or store runtime data or secrets.
 ---
 
 # Git Project Sync
 
 Coordinate continuous development through remote refs, immutable commit SHAs, and a task record committed with the code. Chat history may explain work, but another agent must be able to continue from Git alone.
+
+Development chats may commit and push independently within their assigned scope. Every project that deploys must designate one dedicated deployment chat; only that chat executes deployments. Integration ownership and deployment ownership are separate roles.
 
 ## Required Git destination
 
@@ -36,7 +38,7 @@ AGENTS.md                              agent instructions and constraints
 .agents/skills/git-project-sync/       vendored skill and gate script
 ```
 
-The map names the actual source, test, specification, architecture/decision, operations, release, and asset locations. Existing projects retain their own directory layout; do not move code or create empty directories merely to match examples. If a category does not apply, say so in the map. The plan records scope, milestones, priorities, dependencies, acceptance evidence, and unresolved decisions. Task records hold branch-specific progress and next actions; they do not replace the shared plan. Avoid duplicating a full design or test log across all three files: link to the committed authoritative file and SHA where useful.
+The map names the actual source, test, specification, architecture/decision, operations, release, and asset locations. Existing projects retain their own directory layout; do not move code or create empty directories merely to match examples. If a category does not apply, say so in the map. The plan records scope, milestones, priorities, dependencies, acceptance evidence, unresolved decisions, and the designated deployment chat. Task records hold branch-specific progress, deployment requests, and next actions; they do not replace the shared plan. Avoid duplicating a full design or test log across all three files: link to the committed authoritative file and SHA where useful.
 
 For a fresh or resumed task, read the map, plan, and current branch's task record, in that order. Then inspect the named code, tests, and evidence and verify the recorded base/head against the supplied Git destination. If the map, plan, or task record is stale or incomplete, update it in the appropriate branch before claiming a complete handoff.
 
@@ -68,6 +70,8 @@ Binding adds these versioned project resources:
 `bind` creates the map and plan as scaffolds without overwriting existing files. Fill their real project locations, goals, and gates, remove both `scaffold=true` markers, and review the result. The gate checks that completed versions are in `HEAD`; it cannot judge the semantic quality of the text, so the integration owner must review it. Commit and push the setup branch, then integrate it into the canonical branch. They do not become the project's shared protocol until merged. `bind` never commits, pushes, opens a pull request, merges, or deploys.
 
 Use `--update` only to change an existing config deliberately. To adopt this structure in a previously bound project, first verify a clean setup branch at the canonical remote head, then run `bind --update --refresh-skill --remote <git-url>`. This preserves existing custom map/plan contents and non-managed `AGENTS.md` content; review and commit the generated changes. Legacy bindings without `structureVersion` continue with a warning until adopted. Use `--refresh-skill` only to replace the managed vendored skill with this installed version.
+
+When adopting deployment coordination in an existing project, add the deployment ownership fields below to its preserved plan and deployment requests to active task records where needed. Refreshing the skill does not migrate custom plans, change CI/CD, or designate a chat automatically.
 
 ## Categorize and save project work
 
@@ -157,7 +161,43 @@ Continue from the recorded next step unless the user gives a newer instruction. 
 
 Only the designated integration owner integrates task branches. Verify the reviewed remote head SHA immediately before integration, incorporate the current canonical branch deliberately, resolve conflicts through source review, and rerun affected tests. Never force-push the canonical branch.
 
-Merging, releasing, deploying, migrating data, and changing production are separate actions with separate authorization and acceptance evidence.
+Merging, releasing, deploying, migrating data, and changing production require their applicable authorization and acceptance evidence. Reuse existing authorization within its scope; designation of a deployment chat alone grants no new permissions. A developer may finish its authorized main-branch delivery while deployment remains queued with the designated chat.
+
+## One dedicated deployment chat
+
+### Designation and authority
+
+Before the first deployment, record these fields under `Deployment coordination` in `.agent-sync/plan.md` and integrate them into the canonical branch:
+
+- **Deployment chat:** stable chat/thread ID and, when available, its link; a display title alone is insufficient.
+- **Designation:** who assigned the chat and the instruction or decision supporting that assignment. Use a chat explicitly selected by the user or assigned under the project's existing coordination authority. Do not assume the current chat owns deployment. Create or message another chat only with the required user authorization.
+- **Targets and runbook:** environments/services covered, deployment workflow, release-record location, and any existing CI/CD concurrency mechanism. Mark deployment `not applicable` for projects with no deployable target.
+- **Current release:** release ID, status, pinned candidate SHA/artifact digest, and evidence or next action. Use `idle` when no release is active.
+
+The latest verified canonical-branch record is authoritative, even when a task branch carries an older plan. Check it when starting/resuming release-related work and again before changing a target. If the designation is absent, conflicting, or cannot be verified, continue development and Git handoff but stop deployment. Request only the missing designation or decision.
+
+The designated chat handles deployment preparation, execution, migrations, rollout, verification, and rollback for the recorded targets. It may commit release records or deployment fixes under the normal branch/integration rules. Other chats must not independently publish artifacts, restart services, switch production versions, run migrations or rollbacks, or trigger deployment workflows. Existing automatic deployments must also respect this ownership: identify merge/push triggers before integration, and route deployment-triggering actions through the designated chat using the authorized release mechanism. Do not silently change CI/CD or claim centralization is enforced merely by this document.
+
+### Development-to-deployment handoff
+
+Each development chat records its deployment request in its own task record, commits and pushes it, and reports the record path and resulting remote head SHA. Include:
+
+- Deployment required, not required, or undecided; target environment/service and intended user-visible change.
+- Remote branch and task record; report the immutable head SHA outside the file as usual. The deployment chat resolves the corresponding integrated canonical SHA before release.
+- Test evidence, dependencies and ordering, configuration/migration requirements, and risks or rollback constraints. Reference authorized credential locations without secret values.
+- Separate code/main-delivery status from deployment and production-acceptance status. `Ready for deployment` does not mean deployed.
+
+Developers keep unrelated task records separate; the deployment chat consolidates accepted requests into a release batch in the mapped release-record location. A queued request does not itself notify or wake another chat. Without authorization to message it, provide the durable handoff location to the user and do not claim the chat was notified.
+
+### Serialized release and ownership transfer
+
+The deployment chat selects the batch and pins a verified canonical commit plus artifact identity. Recheck ownership, target state, active jobs, acceptance evidence, backup, and rollback readiness before execution. Later commits do not silently join that batch. Use `queued → preparing → deploying → verifying → accepted`, with `blocked`, `failed`, or `rolled-back` recorded when applicable. Complete or explicitly stop the current release before starting another that can affect the same targets.
+
+Use the project's existing deployment lock or CI/CD concurrency control where available. A Git plan is a durable coordination record, not an atomic lock; if overlapping execution cannot be ruled out, stop target-changing actions until ownership and active jobs are reconciled. These Git gates do not inspect live deployment state or enforce deployment-chat identity.
+
+Record the deployed SHA/version and artifact digest, environment, job/run reference, verification of the real user path, and rollback outcome where relevant. Build success, merge success, or HTTP 200 alone does not establish production acceptance. Update the shared release status and link evidence back to the included task records.
+
+If the deployment chat is unavailable, leave requests queued and continue independent development. Transfer ownership only through an explicit user instruction or authorized project decision: reconcile any active release/job first, record the replacement chat and transfer in the canonical plan, and have the replacement verify that record before acting. Never let two chats deploy during a transfer or infer a takeover from silence.
 
 ## Stop conditions
 
