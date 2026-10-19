@@ -21,7 +21,7 @@ function git(args, cwd) {
   return result.stdout.trim();
 }
 
-test('every gate requires an explicit Git address and rejects a different destination', () => {
+function exerciseGitWorkflow(deploymentLayout) {
   const fixture = mkdtempSync(join(tmpdir(), 'git-project-sync-test-'));
   try {
     const remote = join(fixture, 'canonical.git');
@@ -105,6 +105,41 @@ test('every gate requires an explicit Git address and rejects a different destin
       .replace('Describe the intended project outcome and current scope.', 'Keep development work reproducible across agents.')
       .replace('Add a real milestone', 'Bind and hand off a task')
       .replace('Add a verifiable result', 'The handoff gate passes.'));
+    const deploymentPlan = deploymentLayout === 'legacy-single-owner'
+      ? [
+        '## Deployment coordination',
+        '',
+        '- Deployment chat: chat-legacy-owner; designated by the user for the existing service.',
+        '- Targets and runbook: service/test; ops/service.md.',
+        '- Current release: idle.',
+      ].join('\n')
+      : [
+        '## Deployment coordination',
+        '',
+        '### Unit: website',
+        '',
+        '- Code and targets: server/; website/test.',
+        '- CI/deployment chat: chat-website-owner.',
+        '- Designation: user assigned the website unit.',
+        '- Version rules: service versions; website owner allocates.',
+        '- Current release: idle.',
+        '',
+        '### Unit: client',
+        '',
+        '- Code and targets: client/; desktop/test.',
+        '- CI/deployment chat: chat-client-owner.',
+        '- Designation: user assigned the independently releasable client.',
+        '- Version rules: client versions; client owner allocates.',
+        '- Current release: idle.',
+        '',
+        '### Shared coordination',
+        '',
+        '- Website and client may release independently under the compatible API contract.',
+        '- Shared integration CI: website owner; shared migration jobs serialize.',
+      ].join('\n');
+    writeFileSync(projectPlanPath, readFileSync(projectPlanPath, 'utf8')
+      .replace(/## Deployment coordination\n[\s\S]*?(?=## Decisions and open questions\n)/,
+        `${deploymentPlan}\n\n`));
     git(['add', '.agent-sync/project-map.md', '.agent-sync/plan.md'], work);
     git(['commit', '--quiet', '-m', 'complete project structure'], work);
     git(['push', '--quiet', 'origin', 'main'], work);
@@ -155,4 +190,10 @@ test('every gate requires an explicit Git address and rejects a different destin
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
-});
+}
+
+for (const deploymentLayout of ['legacy-single-owner', 'independent-units']) {
+  test(`Git gates and refresh preserve ${deploymentLayout} deployment plans`, () => {
+    exerciseGitWorkflow(deploymentLayout);
+  });
+}

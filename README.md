@@ -12,7 +12,7 @@ Migrated from `SomeSkills4Agents/skills/` (2026-10-03):
 - [`ai-yaoren`](ai-yaoren/SKILL.md): Orchestrate a hybrid AI team from AIRouter-preferred external models and Codex-native models; invoke with `$ai-yaoren`.
 - [`ai-yaoren-local`](ai-yaoren-local/SKILL.md): Organize Codex-native agents for cost-aware software delivery; invoke with `$ai-yaoren-local`.
 - [`everyday-visual-design`](everyday-visual-design/SKILL.md): Create or review visual arrangement of text and images based on four design principles, typography, and color.
-- [`git-project-sync`](git-project-sync/SKILL.md): Use an explicitly supplied Git repository as the durable record for continuous development across agents, threads, machines, or worktrees. Development chats commit independently; one designated deployment chat coordinates release batches, deployment, verification, and rollback.
+- [`git-project-sync`](git-project-sync/SKILL.md): Use an explicitly supplied Git repository as the durable record for continuous development across agents, threads, machines, or worktrees. Development chats commit independently; each deployment unit has one owning chat for CI coordination, release batches, deployment, verification, and rollback. Independently deployable units may have different owners.
 - [`mori-dispatch`](mori-dispatch/SKILL.md): Dispatch tasks to Mori digital employees via verified MCP or HTTP API channels, with user-driven employee selection.
 
 ## Using dev-team

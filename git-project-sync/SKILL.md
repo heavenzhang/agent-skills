@@ -1,13 +1,13 @@
 ---
 name: git-project-sync
-description: Coordinate continuous development across agents, chats, machines, and worktrees using a user-supplied Git repository URL, committed project map, shared plan, and task handoffs. Let development chats commit independently while one designated deployment chat owns releases. Use when binding, starting, resuming, handing off, integrating, or coordinating deployment ownership. Does not grant deployment authorization or store runtime data or secrets.
+description: Coordinate continuous development across agents, chats, machines, and worktrees using a user-supplied Git repository URL, committed project map, shared plan, and task handoffs. Let development chats commit independently; each deployment unit has one owning chat, and independent units may have different owners. Use when binding, starting, resuming, handing off, integrating, or coordinating deployment ownership. Does not grant deployment authorization or store runtime data or secrets.
 ---
 
 # Git Project Sync
 
 Coordinate continuous development through remote refs, immutable commit SHAs, and a task record committed with the code. Chat history may explain work, but another agent must be able to continue from Git alone.
 
-Development chats may commit and push independently within their assigned scope. Every project that deploys must designate one dedicated deployment chat; only that chat executes deployments. Integration ownership and deployment ownership are separate roles.
+Development chats may commit and push independently within their assigned scope. Each deployment unit has one designated chat/thread responsible for its CI coordination, builds, releases, verification, and rollback. Independently deployable units, such as a website service and a client, may have different owners; one chat may own several units. Later code changes for the same unit continue through its existing owner. Integration ownership and deployment ownership are separate roles; this rule does not require one deployment chat or one branch for the whole project.
 
 ## Required Git destination
 
@@ -38,7 +38,7 @@ AGENTS.md                              agent instructions and constraints
 .agents/skills/git-project-sync/       vendored skill and gate script
 ```
 
-The map names the actual source, test, specification, architecture/decision, operations, release, and asset locations. Existing projects retain their own directory layout; do not move code or create empty directories merely to match examples. If a category does not apply, say so in the map. The plan records scope, milestones, priorities, dependencies, acceptance evidence, unresolved decisions, and the designated deployment chat. Task records hold branch-specific progress, deployment requests, and next actions; they do not replace the shared plan. Avoid duplicating a full design or test log across all three files: link to the committed authoritative file and SHA where useful.
+The map names the actual source, test, specification, architecture/decision, operations, release, and asset locations. Existing projects retain their own directory layout; do not move code or create empty directories merely to match examples. If a category does not apply, say so in the map. The plan records scope, milestones, priorities, dependencies, acceptance evidence, unresolved decisions, and the deployment-unit ownership map. Task records hold branch-specific progress, deployment requests, and next actions; they do not replace the shared plan. Avoid duplicating a full design or test log across all three files: link to the committed authoritative file and SHA where useful.
 
 For a fresh or resumed task, read the map, plan, and current branch's task record, in that order. Then inspect the named code, tests, and evidence and verify the recorded base/head against the supplied Git destination. If the map, plan, or task record is stale or incomplete, update it in the appropriate branch before claiming a complete handoff.
 
@@ -71,7 +71,7 @@ Binding adds these versioned project resources:
 
 Use `--update` only to change an existing config deliberately. To adopt this structure in a previously bound project, first verify a clean setup branch at the canonical remote head, then run `bind --update --refresh-skill --remote <git-url>`. This preserves existing custom map/plan contents and non-managed `AGENTS.md` content; review and commit the generated changes. Legacy bindings without `structureVersion` continue with a warning until adopted. Use `--refresh-skill` only to replace the managed vendored skill with this installed version.
 
-When adopting deployment coordination in an existing project, add the deployment ownership fields below to its preserved plan and deployment requests to active task records where needed. Refreshing the skill does not migrate custom plans, change CI/CD, or designate a chat automatically.
+When adopting deployment coordination in an existing project, add the per-unit ownership fields below to its preserved plan and route active deployment requests to the affected units. Existing single-chat plans remain valid for the scope that chat already owns; preserve that assignment, and record explicit unit mappings when splitting responsibilities. Refreshing the skill does not migrate custom plans, change CI/CD, or designate or transfer owners automatically.
 
 ## Categorize and save project work
 
@@ -161,43 +161,54 @@ Continue from the recorded next step unless the user gives a newer instruction. 
 
 Only the designated integration owner integrates task branches. Verify the reviewed remote head SHA immediately before integration, incorporate the current canonical branch deliberately, resolve conflicts through source review, and rerun affected tests. Never force-push the canonical branch.
 
-Merging, releasing, deploying, migrating data, and changing production require their applicable authorization and acceptance evidence. Reuse existing authorization within its scope; designation of a deployment chat alone grants no new permissions. A developer may finish its authorized main-branch delivery while deployment remains queued with the designated chat.
+Merging, releasing, deploying, migrating data, and changing production require their applicable authorization and acceptance evidence. Reuse existing authorization within its scope; designation of a deployment chat alone grants no new permissions. A developer may finish its authorized main-branch delivery while deployment remains queued with the affected unit owners.
 
-## One dedicated deployment chat
+## One owning chat per deployment unit
 
-### Designation and authority
+### Unit boundaries and ownership
 
-Before the first deployment, record these fields under `Deployment coordination` in `.agent-sync/plan.md` and integrate them into the canonical branch:
+A deployment unit is one endpoint or an inseparable set of code and artifacts that must be built, released, verified, and rolled back together. A website service and a client that can be released and rolled back independently may be separate units with different owners. A shared repository does not force one owner; different directories or branches alone do not prove independence. Treat code that requires a simultaneous switch or cannot be rolled back separately as one unit.
 
-- **Deployment chat:** stable chat/thread ID and, when available, its link; a display title alone is insufficient.
-- **Designation:** who assigned the chat and the instruction or decision supporting that assignment. Use a chat explicitly selected by the user or assigned under the project's existing coordination authority. Do not assume the current chat owns deployment. Create or message another chat only with the required user authorization.
-- **Targets and runbook:** environments/services covered, deployment workflow, release-record location, and any existing CI/CD concurrency mechanism. Mark deployment `not applicable` for projects with no deployable target.
-- **Current release:** release ID, status, pinned candidate SHA/artifact digest, and evidence or next action. Use `idle` when no release is active.
+Before changing a deployment target, verify the affected unit's ownership under `Deployment coordination` in the latest canonical `.agent-sync/plan.md`. For each unit, record:
 
-The latest verified canonical-branch record is authoritative, even when a task branch carries an older plan. Check it when starting/resuming release-related work and again before changing a target. If the designation is absent, conflicting, or cannot be verified, continue development and Git handoff but stop deployment. Request only the missing designation or decision.
+- **Unit and scope:** stable unit ID, code/artifact boundaries, environments/services, and dependencies on other units or shared resources. Mark deployment `not applicable` when the project has no deployable target.
+- **CI/deployment chat:** exactly one stable chat/thread ID and, when available, its link; a display title alone is insufficient. The same owner may cover several units.
+- **Designation:** the user instruction or authorized project decision assigning that owner and scope. Reuse verified existing ownership; do not assume the current chat owns a unit. Create or message another chat only with the required user authorization.
+- **Runbook and version rules:** CI/build/deployment triggers, release-record location, concurrency controls, version allocation, and compatibility or ordering requirements.
+- **Current release:** this unit's release ID, status, pinned candidate SHA/artifact digest, included tasks, and evidence or next action. Use `idle` when no release is active.
 
-The designated chat handles deployment preparation, execution, migrations, rollout, verification, and rollback for the recorded targets. It may commit release records or deployment fixes under the normal branch/integration rules. Other chats must not independently publish artifacts, restart services, switch production versions, run migrations or rollbacks, or trigger deployment workflows. Existing automatic deployments must also respect this ownership: identify merge/push triggers before integration, and route deployment-triggering actions through the designated chat using the authorized release mechanism. Do not silently change CI/CD or claim centralization is enforced merely by this document.
+The canonical record takes precedence over an older task-branch plan. All later work on that unit, regardless of which development chat wrote it, is handed to its recorded owner. Missing, conflicting, or unverifiable ownership pauses CI/deployment actions for that unit and dependent releases; continue development, Git handoff, and unrelated independent units. Request only the missing assignment or decision.
 
-### Development-to-deployment handoff
+The unit owner coordinates its shared CI, builds, migrations, deployment, verification, and rollback. Other chats may develop, run local checks, commit, and hand off, but must not independently trigger that unit's shared CI/release workflow, publish its artifacts, restart its services, or switch its versions. They may deploy a different unit they are designated to own. Identify existing automatic push/merge triggers and route target-changing actions through the affected owners under the authorized workflow. Do not silently change CI/CD or claim the Git record enforces runtime ownership.
 
-Each development chat records its deployment request in its own task record, commits and pushes it, and reports the record path and resulting remote head SHA. Include:
+### Requests and cross-unit coordination
 
-- Deployment required, not required, or undecided; target environment/service and intended user-visible change.
-- Remote branch and task record; report the immutable head SHA outside the file as usual. The deployment chat resolves the corresponding integrated canonical SHA before release.
-- Test evidence, dependencies and ordering, configuration/migration requirements, and risks or rollback constraints. Reference authorized credential locations without secret values.
-- Separate code/main-delivery status from deployment and production-acceptance status. `Ready for deployment` does not mean deployed.
+Each development chat commits deployment requests in its own task record and reports the record path and immutable remote head SHA. Include:
 
-Developers keep unrelated task records separate; the deployment chat consolidates accepted requests into a release batch in the mapped release-record location. A queued request does not itself notify or wake another chat. Without authorization to message it, provide the durable handoff location to the user and do not claim the chat was notified.
+- Affected unit IDs, required/not required/undecided status for each, target environments, and intended user-visible changes.
+- Branch, task record, and test evidence. Report the head SHA outside the file; the owner resolves the integrated candidate SHA before releasing.
+- Cross-unit dependencies, interface compatibility, shared configuration/data migrations, release order, rollback constraints, and the owner receiving each request. Reference authorized credential locations without secret values.
+- Separate code/main-delivery, per-unit deployment, and production-acceptance states. `Ready for deployment` does not mean deployed; a partial rollout is not whole-task acceptance.
 
-### Serialized release and ownership transfer
+Each owner consolidates accepted requests into batches for its unit. For a cross-unit change, coordinate compatibility, order, and rollback among the affected owners; designate one executor for shared integration CI or a shared migration instead of running it from several chats. Independent units may release concurrently. Jobs that affect a shared target or resource must use the existing lock/concurrency mechanism and must not overlap unsafely. This does not require a permanent project-wide deployment owner.
 
-The deployment chat selects the batch and pins a verified canonical commit plus artifact identity. Recheck ownership, target state, active jobs, acceptance evidence, backup, and rollback readiness before execution. Later commits do not silently join that batch. Use `queued → preparing → deploying → verifying → accepted`, with `blocked`, `failed`, or `rolled-back` recorded when applicable. Complete or explicitly stop the current release before starting another that can affect the same targets.
+A queued request does not notify or wake its owner. Without authorization to message that chat, provide the durable handoff location and do not claim the owner was notified.
 
-Use the project's existing deployment lock or CI/CD concurrency control where available. A Git plan is a durable coordination record, not an atomic lock; if overlapping execution cannot be ruled out, stop target-changing actions until ownership and active jobs are reconciled. These Git gates do not inspect live deployment state or enforce deployment-chat identity.
+### Unit releases, versions, and ownership transfer
 
-Record the deployed SHA/version and artifact digest, environment, job/run reference, verification of the real user path, and rollback outcome where relevant. Build success, merge success, or HTTP 200 alone does not establish production acceptance. Update the shared release status and link evidence back to the included task records.
+The owner selects a unit's batch and pins a verified candidate commit plus artifact identity. Check that the batch includes the promised tasks and dependencies; list exclusions or unmet dependencies. Recheck scope/ownership, target state, active jobs, acceptance evidence, backup, and rollback readiness before execution. Later commits do not silently join a frozen batch; a changed candidate needs its affected CI revalidated. Track each unit through `queued → preparing → deploying → verifying → accepted`, with `blocked`, `failed`, or `rolled-back` when applicable. Finish or explicitly stop an overlapping release before starting the next.
 
-If the deployment chat is unavailable, leave requests queued and continue independent development. Transfer ownership only through an explicit user instruction or authorized project decision: reconcile any active release/job first, record the replacement chat and transfer in the canonical plan, and have the replacement verify that record before acting. Never let two chats deploy during a transfer or infer a takeover from silence.
+Follow the project's established version rules. Independently versioned units retain their sequences; when units share a version number, record one allocator to prevent competing increments. In the absence of a rule, use `MAJOR.MINOR.PATCH` and `-rc.N` candidates. Development chats identify their changes by SHA rather than assigning competing formal versions. Joint releases map each unit's version, SHA, and artifact in a shared batch record.
+
+Record unit ID/owner, version/tag, complete SHA, artifact digest, included tasks, environment, CI/job references, user-path acceptance, and rollback target/outcome. Do not overwrite published version/tag identities with different code or artifacts. Promote the same verified artifact from test to production; record a new candidate/build/version for a different artifact. Build success, merge success, or HTTP 200 alone does not establish production acceptance.
+
+A Git plan is not an atomic lock. If overlapping execution for a target/resource cannot be ruled out, pause those target-changing actions while reconciling owners and jobs; independent units may continue. These Git gates do not inspect live deployment state or enforce unit boundaries or chat identity.
+
+If a unit owner is unavailable, leave its requests queued and continue independent work. Transfer only that unit through an explicit user instruction or authorized project decision: reconcile its active release/jobs first, record the new owner and scope in the canonical plan, and have the replacement verify it before acting. Never infer takeover from silence or change other units' owners as a side effect.
+
+### Existing project plans
+
+Preserve existing plans and task records during `bind --update --refresh-skill`. A legacy `Deployment chat` assignment remains the owner of its previously designated scope; it is not an obstacle to adding independently owned units. Before a new split is used, record each affected unit and owner, reconcile active jobs and shared dependencies, and retain existing assignments that were not transferred. The command updates the vendored skill and managed instructions, not custom deployment plans, pipelines, or real chat permissions.
 
 ## Stop conditions
 
