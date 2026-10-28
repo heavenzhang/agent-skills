@@ -1,54 +1,54 @@
 ---
 name: git-project-sync
-description: Coordinate continuous development across agents, chats, machines, and worktrees using a user-supplied Git repository URL, committed project map, shared plan, and task handoffs. Let development chats commit independently; each deployment unit has one owning chat, and independent units may have different owners. Use when binding, starting, resuming, handing off, integrating, or coordinating deployment ownership. Does not grant deployment authorization or store runtime data or secrets.
+description: 基于用户明确提供的 Git 仓库地址、已提交的项目地图、共享计划和任务交接记录，支持跨智能体、会话、机器及 worktree 的持续开发。开发会话可独立提交；每个部署单元由唯一会话负责，独立单元可由不同会话负责。适用于项目绑定、任务启动、恢复、交接、集成及部署归属协调。本技能不授予部署权限，也不保存运行数据或秘密信息。
 ---
 
-# Git Project Sync
+# Git 项目同步
 
-Coordinate continuous development through remote refs, immutable commit SHAs, and a task record committed with the code. Chat history may explain work, but another agent must be able to continue from Git alone.
+通过远端引用、不可变的提交 SHA，以及随代码一起提交的任务记录，协调持续开发。聊天历史可以解释工作背景，但另一个智能体必须能够仅凭 Git 中的内容接续工作。
 
-Development chats may commit and push independently within their assigned scope. Each deployment unit has one designated chat/thread responsible for its CI coordination, builds, releases, verification, and rollback. Independently deployable units, such as a website service and a client, may have different owners; one chat may own several units. Later code changes for the same unit continue through its existing owner. Integration ownership and deployment ownership are separate roles; this rule does not require one deployment chat or one branch for the whole project.
+开发会话可以在各自分配的范围内独立提交和推送。每个部署单元指定唯一会话或线程，负责该单元的 CI 协调、构建、发布、验证和回滚。可独立部署的网站服务、客户端等单元，可以分别由不同会话负责；同一会话也可以负责多个单元。同一单元后续新增或修改的代码，继续交给已有负责会话处理。代码集成与部署归属是不同职责，此规则不要求整个项目只有一个部署会话或一条分支。
 
-## Required Git destination
+## 必须明确提供 Git 目标地址
 
-Before using this skill for a project, obtain the Git repository address explicitly supplied by the user. Reuse that address during the task, including every `project-sync.mjs` command via `--remote <git-url>`. If no address has been supplied, ask for it before binding, starting, resuming, or handing off. Do not select a destination from `origin`, `.agent-sync.json`, the current directory, or a handoff note on the user's behalf.
+对项目使用本技能前，必须取得用户明确提供的 Git 仓库地址。任务期间沿用该地址，每次执行 `project-sync.mjs` 命令时，都通过 `--remote <git-url>` 显式传入。用户尚未提供地址时，应先询问，再进行绑定、启动、恢复或交接。不得根据 `origin`、`.agent-sync.json`、当前目录或交接记录，自行替用户选择目标仓库。
 
-The tool checks that the supplied address matches the committed `.agent-sync.json` and the checkout's fetch and push URLs. The address names the repository where code and task records must be committed and pushed; a local commit alone is not a saved remote handoff.
+工具会检查所提供的地址是否与已提交的 `.agent-sync.json`，以及工作副本的 fetch、push 地址一致。该地址指定代码和任务记录必须提交、推送到的仓库；仅完成本地提交，不算已保存远端交接成果。
 
-## What this skill guarantees
+## 本技能的保证范围
 
-When its gates pass, another agent can fetch the named branch and obtain the same committed project artifacts. It does not provide real-time locking, merge correctness, deployment approval, secret distribution, database replication, or synchronization of ignored/generated files.
+校验通过后，另一个智能体可以拉取指定分支，取得相同的已提交项目文件。本技能不提供实时锁、合并正确性保证、部署授权、凭据分发、数据库复制，也不负责同步被忽略的文件或生成文件。
 
-The durable synchronization unit is:
-
-```text
-canonical Git URL + canonical branch + base SHA + task branch + head SHA + committed task record
-```
-
-## Project structure and reading order
-
-Keep these paths in the same Git repository as the project code:
+可持久保存的同步单元由以下信息组成：
 
 ```text
-AGENTS.md                              agent instructions and constraints
-.agent-sync.json                       Git destination and branch policy
-.agent-sync/project-map.md             authoritative navigation map
-.agent-sync/plan.md                    shared development plan and milestones
-.agent-sync/tasks/<branch-record>.md   one handoff record per task branch
-.agents/skills/git-project-sync/       vendored skill and gate script
+权威 Git 地址 + 主干分支 + 基线 SHA + 任务分支 + HEAD SHA + 已提交的任务记录
 ```
 
-The map names the actual source, test, specification, architecture/decision, operations, release, and asset locations. Existing projects retain their own directory layout; do not move code or create empty directories merely to match examples. If a category does not apply, say so in the map. The plan records scope, milestones, priorities, dependencies, acceptance evidence, unresolved decisions, and the deployment-unit ownership map. Task records hold branch-specific progress, deployment requests, and next actions; they do not replace the shared plan. Avoid duplicating a full design or test log across all three files: link to the committed authoritative file and SHA where useful.
+## 项目结构与阅读顺序
 
-For a fresh or resumed task, read the map, plan, and current branch's task record, in that order. Then inspect the named code, tests, and evidence and verify the recorded base/head against the supplied Git destination. If the map, plan, or task record is stale or incomplete, update it in the appropriate branch before claiming a complete handoff.
+将以下路径与项目代码保存在同一个 Git 仓库中：
 
-## Bind a project
+```text
+AGENTS.md                              智能体工作规则与约束
+.agent-sync.json                       Git 目标地址与分支策略
+.agent-sync/project-map.md             权威项目导航地图
+.agent-sync/plan.md                    共享开发计划与里程碑
+.agent-sync/tasks/<branch-record>.md   每个任务分支对应的交接记录
+.agents/skills/git-project-sync/       随项目保存的技能副本与校验脚本
+```
 
-Use the Git URL supplied by the user. Never invent a repository or silently substitute a fork.
+项目地图标明源码、测试、规格说明、架构与决策、运维、发布和资源文件的实际位置。已有项目沿用原有目录结构，不要仅为匹配示例而移动代码或创建空目录。某一类别不适用时，在地图中说明。共享计划记录范围、里程碑、优先级、依赖、验收证据、待决事项，以及部署单元与负责会话的对应关系。任务记录保存分支级进度、部署请求和下一步，不能替代共享计划。避免在这三个文件中重复保存完整设计或测试日志；需要时链接到已提交的权威文件及其 SHA。
 
-For an existing checkout, verify that its configured remote identifies the same repository. For a new checkout, clone the supplied URL using the user's existing Git credentials; do not embed credentials in a URL.
+新任务或恢复任务时，依次阅读项目地图、共享计划和当前分支的任务记录。随后检查其中指向的代码、测试和证据，并对照用户提供的 Git 目标地址核实所记录的基线和 HEAD。地图、计划或任务记录过时、不完整时，应在适当分支更新后，再宣称交接完整。
 
-Bind from a clean branch or worktree whose `HEAD` equals the current canonical remote head:
+## 绑定项目
+
+使用用户提供的 Git 地址，不得编造仓库或悄悄替换为 fork。
+
+已有工作副本需要核实其远端配置确实指向同一个仓库。新建工作副本时，使用用户已有的 Git 凭据克隆所提供的地址，不要将凭据写入 URL。
+
+从干净的分支或 worktree 执行绑定，且其 `HEAD` 必须等于当前远端主干的最新提交：
 
 ```bash
 node <skill-root>/scripts/project-sync.mjs bind \
@@ -58,48 +58,48 @@ node <skill-root>/scripts/project-sync.mjs bind \
   --branch-prefix codex/
 ```
 
-Binding adds these versioned project resources:
+绑定会增加以下纳入版本管理的项目资源：
 
-- `.agent-sync.json`: repository identity and branch policy.
-- `.agent-sync/project-map.md`: where each category of project knowledge and code lives.
-- `.agent-sync/plan.md`: project-wide outcome, milestones, priorities, and acceptance gates.
-- `.agents/skills/git-project-sync/`: a vendored copy of this skill so a fresh clone carries the protocol.
-- A managed block in `AGENTS.md` telling compatible agents to load the vendored skill.
-- `.agent-sync/tasks/`: branch-specific task continuity records created as work begins.
+- `.agent-sync.json`：仓库身份与分支策略。
+- `.agent-sync/project-map.md`：各类项目知识和代码的存放位置。
+- `.agent-sync/plan.md`：项目整体目标、里程碑、优先级和验收条件。
+- `.agents/skills/git-project-sync/`：本技能的项目内副本，使新克隆的工作副本也携带交接协议。
+- `AGENTS.md` 中的托管区块：提示兼容的智能体读取项目内的技能副本。
+- `.agent-sync/tasks/`：任务开始后创建的分支级接续记录。
 
-`bind` creates the map and plan as scaffolds without overwriting existing files. Fill their real project locations, goals, and gates, remove both `scaffold=true` markers, and review the result. The gate checks that completed versions are in `HEAD`; it cannot judge the semantic quality of the text, so the integration owner must review it. Commit and push the setup branch, then integrate it into the canonical branch. They do not become the project's shared protocol until merged. `bind` never commits, pushes, opens a pull request, merges, or deploys.
+`bind` 会创建项目地图和计划模板，不覆盖已有文件。填写实际项目位置、目标和验收条件，移除两个 `scaffold=true` 标记，并审阅结果。校验器会检查完成后的版本是否已包含在 `HEAD` 中；它无法判断文字内容的实际质量，因此仍需集成负责人审阅。提交并推送初始化分支，再将其合入主干。只有合入后，这些内容才成为项目共享协议。`bind` 本身不会提交、推送、创建 Pull Request、合并或部署。
 
-Use `--update` only to change an existing config deliberately. To adopt this structure in a previously bound project, first verify a clean setup branch at the canonical remote head, then run `bind --update --refresh-skill --remote <git-url>`. This preserves existing custom map/plan contents and non-managed `AGENTS.md` content; review and commit the generated changes. Legacy bindings without `structureVersion` continue with a warning until adopted. Use `--refresh-skill` only to replace the managed vendored skill with this installed version.
+只有明确需要修改已有配置时，才使用 `--update`。在已绑定项目中采用此结构时，先核实初始化分支干净，且位于远端主干最新提交，再执行 `bind --update --refresh-skill --remote <git-url>`。这会保留已有自定义地图、计划内容，以及 `AGENTS.md` 的非托管内容；审阅并提交生成的改动。未包含 `structureVersion` 的旧绑定在升级前会继续运行并给出警告。只有需要用当前安装版本替换项目内托管技能副本时，才使用 `--refresh-skill`。
 
-When adopting deployment coordination in an existing project, add the per-unit ownership fields below to its preserved plan and route active deployment requests to the affected units. Existing single-chat plans remain valid for the scope that chat already owns; preserve that assignment, and record explicit unit mappings when splitting responsibilities. Refreshing the skill does not migrate custom plans, change CI/CD, or designate or transfer owners automatically.
+已有项目引入部署协调时，在保留的计划中补充下文规定的各单元归属字段，并将活动部署请求交给对应单元。已有单会话计划对其原定范围继续有效；保留该归属，拆分职责时明确记录各单元的对应关系。刷新技能不会迁移自定义计划、修改 CI/CD，也不会自动指定或转移负责人。
 
-## Categorize and save project work
+## 分类保存项目成果
 
-GitHub is the remote view of the named Git repository, not a second source of truth. Use the map to classify each file and put it in the project's existing appropriate location:
+指定 Git 仓库是权威记录来源，GitHub 提供该仓库的远端视图。依据项目地图分类文件，并保存到项目已有的适当位置：
 
-| Category | Save and update |
+| 类别 | 保存与更新内容 |
 | --- | --- |
-| Source and tests | Product code, test cases, fixtures, and build configuration in mapped source/test paths |
-| Requirements and decisions | Specifications, architecture, and decision records in mapped documentation paths |
-| Shared plan | `.agent-sync/plan.md`, updated by the integration owner when milestones, priorities, or acceptance gates change |
-| Task handoff | `.agent-sync/tasks/`, updated with the task branch's code and verification |
-| Operations and release | Non-secret runbooks, release notes, migration plans, and validation evidence in mapped paths |
-| Assets and large outputs | Version only suitable source assets; put large/generated outputs in an approved external store and link their non-secret location and digest |
+| 源码与测试 | 在地图指定的源码、测试路径保存产品代码、测试用例、测试数据和构建配置 |
+| 需求与决策 | 在地图指定的文档路径保存规格说明、架构和决策记录 |
+| 共享计划 | 里程碑、优先级或验收条件变化时，由集成负责人更新 `.agent-sync/plan.md` |
+| 任务交接 | 随任务分支的代码和验证结果更新 `.agent-sync/tasks/` |
+| 运维与发布 | 在地图指定的位置保存不含秘密信息的操作手册、发布说明、迁移计划和验证证据 |
+| 资源与大型输出 | 仅将适合版本管理的源资源纳入 Git；大型或生成输出保存到已获授权的外部存储，并记录非敏感位置和摘要 |
 
-Do not commit credentials, tokens, cookies, private keys, local databases, caches, build outputs, or machine-only state. Project records can name how authorized agents obtain required access, but must not contain the access material. If a file belongs in another repository, record its explicit URL and revision in the map; do not imply it was saved to this Git destination.
+不得提交凭据、令牌、Cookie、私钥、本地数据库、缓存、构建输出或仅适用于本机的状态。项目记录可以说明获授权的智能体如何取得所需访问能力，但不能包含凭据本身。文件属于另一个仓库时，在地图中记录该仓库的明确地址和版本，不得暗示文件已保存到当前 Git 目标仓库。
 
-Before pushing a task branch, stage only the intended paths (including its task record and any changed plan/map), review `git diff --cached --name-status` and `git diff --cached --check`, commit, and push to the configured remote. Avoid blanket `git add .` when unrelated user changes may be present. Run the handoff gate against that remote after pushing. The integration owner reviews each category and updates shared map/plan entries when integrating; a pull request or GitHub upload alone does not prove the project is current or deployable.
+推送任务分支前，仅暂存预期路径，包括任务记录及变更的计划、地图；检查 `git diff --cached --name-status` 和 `git diff --cached --check`，然后提交并推送到配置的远端。可能存在无关用户改动时，避免直接使用 `git add .`。推送后，对该远端运行交接校验。集成负责人合入时审阅各类成果，并更新共享地图和计划；仅创建 Pull Request 或上传文件到 GitHub，不能证明项目资料已完整更新或具备部署条件。
 
-## Start an agent task
+## 启动智能体任务
 
-Read `.agent-sync.json` and the committed map and plan, then run the read-only observation gate:
+阅读 `.agent-sync.json` 和已提交的地图、计划，再运行只读的状态观察校验：
 
 ```bash
 node .agents/skills/git-project-sync/scripts/project-sync.mjs observe \
   --repo <project-path> --remote <git-url>
 ```
 
-Fetch the configured remote and canonical branch. Create a unique task branch and isolated worktree from the verified remote SHA; never let two writing agents share a worktree.
+获取配置的远端及主干分支。从已核实的远端 SHA 创建唯一任务分支和隔离 worktree；不要让两个执行写入的智能体共用同一个 worktree。
 
 ```bash
 git fetch --prune <remote-name> <canonical-branch>
@@ -110,7 +110,7 @@ node .agents/skills/git-project-sync/scripts/project-sync.mjs start \
   --base <full-canonical-sha>
 ```
 
-After the start gate passes, create the branch-specific continuity record:
+启动校验通过后，创建当前分支的接续记录：
 
 ```bash
 node .agents/skills/git-project-sync/scripts/project-sync.mjs task-init \
@@ -120,20 +120,20 @@ node .agents/skills/git-project-sync/scripts/project-sync.mjs task-init \
   --title "<task outcome>"
 ```
 
-Replace the scaffold with the real objective, acceptance criteria, completed work, verification, blockers, and one concrete next step. Remove `scaffold=true`, then commit the record with the task changes. The record path is derived from the branch, so parallel branches do not overwrite one another.
+将模板替换为实际目标、验收标准、已完成工作、验证结果、阻断，以及一个明确的下一步。移除 `scaffold=true`，再将记录与任务改动一起提交。记录路径根据分支生成，避免并行分支相互覆盖。
 
-The coordinator assigns branch ownership, write scope, dependencies, and the integration owner before parallel edits. Treat dirty or unpushed work from another worktree as belonging to another task unless the user explicitly reassigns it. Do not copy, stash, reset, overwrite, or commit it.
+并行编辑前，由协调者分配分支归属、可写范围、依赖和集成负责人。其他 worktree 中未提交或未推送的工作，除非用户明确重新分配，否则视为属于其他任务。不要复制、stash、reset、覆盖或代为提交这些内容。
 
-## Work and handoff
+## 开发与交接
 
-- Commit coherent project artifacts and tests on the task branch.
-- Keep secrets, credentials, cookies, private keys, local databases, caches, build output, and machine-only state out of Git.
-- Keep the committed task continuity record current. It carries the objective, acceptance criteria, completed scope, verification evidence, blockers, unknowns, and next action across agents.
-- Record the resulting head SHA and remote branch in the task report or pull request; do not place the head SHA inside the task file because committing it would change the SHA again.
-- Do not claim a handoff is synchronized until the task branch exists on the configured remote at the same head SHA.
-- After handoff, do not rewrite published history or force-push. Add commits or create a new branch.
+- 在任务分支上提交完整、连贯的项目文件和测试。
+- 不将秘密信息、凭据、Cookie、私钥、本地数据库、缓存、构建输出或本机专属状态纳入 Git。
+- 持续更新已提交的任务接续记录，使目标、验收标准、已完成范围、验证证据、阻断、未知事项和下一步能够跨智能体传递。
+- 在任务报告或 Pull Request 中记录最终 HEAD SHA 和远端分支；不要将记录文件自身所属提交的 HEAD SHA 写进文件，因为提交该文件会再次改变 SHA。
+- 只有配置远端已存在该任务分支，且其 HEAD SHA 与本地一致时，才可宣称交接已同步。
+- 交接后不改写已发布历史，也不强推；通过新增提交或新建分支继续工作。
 
-Verify handoff:
+验证交接：
 
 ```bash
 node .agents/skills/git-project-sync/scripts/project-sync.mjs handoff \
@@ -142,11 +142,11 @@ node .agents/skills/git-project-sync/scripts/project-sync.mjs handoff \
   --base <full-base-sha>
 ```
 
-The handoff gate verifies both the remote branch SHA and the committed task record. If pushing is not authorized, stop after the local commit and report `local only — not synchronized to the remote`. Request authority for the exact branch; do not describe the remote handoff as complete.
+交接校验同时核实远端分支 SHA 和已提交的任务记录。如果没有推送授权，在本地提交后停止，并报告“仅本地保存，尚未同步到远端”（`local only — not synchronized to the remote`）。针对具体分支请求授权，不得将远端交接描述为已完成。
 
-## Resume another agent's task
+## 恢复另一个智能体的任务
 
-Fetch the exact remote task branch into a new clean worktree. Read its project map, shared plan, and `.agent-sync/tasks/` record, then run:
+将明确指定的远端任务分支获取到新的干净 worktree。阅读其项目地图、共享计划和 `.agent-sync/tasks/` 记录，再运行：
 
 ```bash
 node .agents/skills/git-project-sync/scripts/project-sync.mjs resume \
@@ -155,72 +155,72 @@ node .agents/skills/git-project-sync/scripts/project-sync.mjs resume \
   --base <recorded-base-sha>
 ```
 
-Continue from the recorded next step unless the user gives a newer instruction. Review the entire `base..HEAD` diff and rerun risk-relevant tests. A clean synchronization check proves identity and transport, not implementation quality.
+除非用户提供更新指示，否则从记录的下一步继续。审阅完整的 `base..HEAD` 差异，并重新运行与风险相关的测试。同步校验通过只证明仓库身份和内容传输一致，不能证明实现质量。
 
-## Integrate
+## 集成
 
-Only the designated integration owner integrates task branches. Verify the reviewed remote head SHA immediately before integration, incorporate the current canonical branch deliberately, resolve conflicts through source review, and rerun affected tests. Never force-push the canonical branch.
+只有指定的集成负责人负责合入任务分支。集成前立即核实已审阅的远端 HEAD SHA，审慎同步当前主干，通过源码审阅解决冲突，并重新运行受影响的测试。不得强推主干。
 
-Merging, releasing, deploying, migrating data, and changing production require their applicable authorization and acceptance evidence. Reuse existing authorization within its scope; designation of a deployment chat alone grants no new permissions. A developer may finish its authorized main-branch delivery while deployment remains queued with the affected unit owners.
+合并、发布、部署、数据迁移和生产变更，需要相应授权及验收证据。在适用范围内沿用已有授权；仅被指定为部署会话，不会获得新的权限。开发会话可以完成已获授权的主干交付，同时将部署请求保留在对应单元负责人的队列中。
 
-## One owning chat per deployment unit
+## 每个部署单元由唯一会话负责
 
-### Unit boundaries and ownership
+### 单元边界与归属
 
-A deployment unit is one endpoint or an inseparable set of code and artifacts that must be built, released, verified, and rolled back together. A website service and a client that can be released and rolled back independently may be separate units with different owners. A shared repository does not force one owner; different directories or branches alone do not prove independence. Treat code that requires a simultaneous switch or cannot be rolled back separately as one unit.
+部署单元是一个端，或必须一起构建、发布、验证和回滚的一组不可分割代码与制品。能够独立发布和回滚的网站服务、客户端，可以分别作为不同单元，由不同会话负责。同一仓库不意味着只能有一个负责人；目录或分支不同，也不能单独证明可以独立部署。需要同步切换或不能分别回滚的代码，按同一个单元处理。
 
-Before changing a deployment target, verify the affected unit's ownership under `Deployment coordination` in the latest canonical `.agent-sync/plan.md`. For each unit, record:
+修改部署目标前，在最新主干的 `.agent-sync/plan.md` 中检查 `Deployment coordination` 部分，核实受影响单元的归属。每个单元记录：
 
-- **Unit and scope:** stable unit ID, code/artifact boundaries, environments/services, and dependencies on other units or shared resources. Mark deployment `not applicable` when the project has no deployable target.
-- **CI/deployment chat:** exactly one stable chat/thread ID and, when available, its link; a display title alone is insufficient. The same owner may cover several units.
-- **Designation:** the user instruction or authorized project decision assigning that owner and scope. Reuse verified existing ownership; do not assume the current chat owns a unit. Create or message another chat only with the required user authorization.
-- **Runbook and version rules:** CI/build/deployment triggers, release-record location, concurrency controls, version allocation, and compatibility or ordering requirements.
-- **Current release:** this unit's release ID, status, pinned candidate SHA/artifact digest, included tasks, and evidence or next action. Use `idle` when no release is active.
+- **单元与范围**：稳定单元 ID、代码与制品边界、环境和服务，以及对其他单元或共享资源的依赖。项目没有可部署目标时，标记部署为 `not applicable`。
+- **CI／部署会话**：唯一且稳定的会话或线程 ID，能够提供时附链接；仅有显示标题不足以确认身份。同一负责人可以负责多个单元。
+- **指定依据**：分配该负责人及其范围的用户指令或已获授权的项目决策。沿用已核实的归属，不要假定当前会话拥有该单元。只有具备所需用户授权时，才创建其他会话或向其发送消息。
+- **操作手册与版本规则**：CI、构建、部署触发方式，发布记录位置，并发控制，版本分配，以及兼容性和执行顺序要求。
+- **当前发布**：该单元的发布 ID、状态、固定的候选 SHA 与制品摘要、所含任务，以及证据或下一步。没有活动发布时使用 `idle`。
 
-The canonical record takes precedence over an older task-branch plan. All later work on that unit, regardless of which development chat wrote it, is handed to its recorded owner. Missing, conflicting, or unverifiable ownership pauses CI/deployment actions for that unit and dependent releases; continue development, Git handoff, and unrelated independent units. Request only the missing assignment or decision.
+主干记录优先于旧任务分支中的计划。无论后续代码由哪个开发会话编写，都交给该单元已记录的负责人。归属缺失、冲突或无法核实时，暂停该单元的 CI／部署操作及依赖它的发布；继续开发、Git 交接和不受影响的独立单元。仅请求补充缺失的分配信息或决策。
 
-The unit owner coordinates its shared CI, builds, migrations, deployment, verification, and rollback. Other chats may develop, run local checks, commit, and hand off, but must not independently trigger that unit's shared CI/release workflow, publish its artifacts, restart its services, or switch its versions. They may deploy a different unit they are designated to own. Identify existing automatic push/merge triggers and route target-changing actions through the affected owners under the authorized workflow. Do not silently change CI/CD or claim the Git record enforces runtime ownership.
+单元负责人统一协调该单元的共享 CI、构建、迁移、部署、验证和回滚。其他会话可以开发、执行本地检查、提交和交接，但不得独立触发该单元的共享 CI／发布流程、发布制品、重启服务或切换版本。它们可以部署另一个已被指定由其负责的单元。识别已有的自动 push／merge 触发器，按已获授权的流程，将会改变目标状态的操作交由对应负责人协调。不要悄悄修改 CI/CD，也不要宣称 Git 记录本身能强制执行运行时归属。
 
-### Requests and cross-unit coordination
+### 请求与跨单元协调
 
-Each development chat commits deployment requests in its own task record and reports the record path and immutable remote head SHA. Include:
+每个开发会话在自己的任务记录中提交部署请求，并报告记录路径和不可变的远端 HEAD SHA。请求包含：
 
-- Affected unit IDs, required/not required/undecided status for each, target environments, and intended user-visible changes.
-- Branch, task record, and test evidence. Report the head SHA outside the file; the owner resolves the integrated candidate SHA before releasing.
-- Cross-unit dependencies, interface compatibility, shared configuration/data migrations, release order, rollback constraints, and the owner receiving each request. Reference authorized credential locations without secret values.
-- Separate code/main-delivery, per-unit deployment, and production-acceptance states. `Ready for deployment` does not mean deployed; a partial rollout is not whole-task acceptance.
+- 受影响的单元 ID、各单元是否需要部署（`required`／`not required`／`undecided`）、目标环境，以及预期用户可见变化。
+- 分支、任务记录和测试证据。在文件外报告 HEAD SHA，由负责人确定集成后的候选 SHA 再发布。
+- 跨单元依赖、接口兼容性、共享配置与数据迁移、发布顺序、回滚限制，以及各请求的接收负责人。引用已获授权的凭据位置，不写入秘密值。
+- 分别记录代码／主干交付、各单元部署和生产验收状态。`Ready for deployment` 表示准备就绪，不能等同于已部署；部分上线不能作为整个任务的验收结果。
 
-Each owner consolidates accepted requests into batches for its unit. For a cross-unit change, coordinate compatibility, order, and rollback among the affected owners; designate one executor for shared integration CI or a shared migration instead of running it from several chats. Independent units may release concurrently. Jobs that affect a shared target or resource must use the existing lock/concurrency mechanism and must not overlap unsafely. This does not require a permanent project-wide deployment owner.
+各负责人将已接受的请求汇总为本单元的发布批次。跨单元改动由相关负责人协调兼容性、顺序和回滚；共享集成 CI 或共享迁移指定一个执行者，避免多个会话重复执行。独立单元可以并行发布。影响共享目标或资源的作业，必须使用已有锁或并发机制，避免不安全的重叠执行。这不要求永久设置项目级唯一部署负责人。
 
-A queued request does not notify or wake its owner. Without authorization to message that chat, provide the durable handoff location and do not claim the owner was notified.
+请求进入队列，不会自动通知或唤醒负责人。没有向该会话发送消息的授权时，提供可持久访问的交接位置，不得宣称已通知负责人。
 
-### Unit releases, versions, and ownership transfer
+### 单元发布、版本与归属转交
 
-The owner selects a unit's batch and pins a verified candidate commit plus artifact identity. Check that the batch includes the promised tasks and dependencies; list exclusions or unmet dependencies. Recheck scope/ownership, target state, active jobs, acceptance evidence, backup, and rollback readiness before execution. Later commits do not silently join a frozen batch; a changed candidate needs its affected CI revalidated. Track each unit through `queued → preparing → deploying → verifying → accepted`, with `blocked`, `failed`, or `rolled-back` when applicable. Finish or explicitly stop an overlapping release before starting the next.
+负责人为单元选择发布批次，固定已核实的候选提交和制品身份。检查批次是否包含承诺的任务和依赖，并列明排除项或未满足的依赖。执行前再次核实范围与归属、目标状态、活动作业、验收证据、备份和回滚准备。后续提交不能自动加入已冻结批次；候选变化时，重新验证受影响的 CI。各单元依次跟踪 `queued → preparing → deploying → verifying → accepted`，必要时使用 `blocked`、`failed` 或 `rolled-back`。开始下一次发布前，先完成或明确停止与之重叠的发布。
 
-Follow the project's established version rules. Independently versioned units retain their sequences; when units share a version number, record one allocator to prevent competing increments. In the absence of a rule, use `MAJOR.MINOR.PATCH` and `-rc.N` candidates. Development chats identify their changes by SHA rather than assigning competing formal versions. Joint releases map each unit's version, SHA, and artifact in a shared batch record.
+沿用项目既有版本规则。已有独立版本的单元保留各自序列；多个单元共用版本号时，记录唯一分配方，避免竞争递增。没有约定时，采用 `MAJOR.MINOR.PATCH`，候选版本使用 `-rc.N`。开发会话以 SHA 标识改动，不各自分配相互冲突的正式版本。联合发布在共享批次记录中建立各单元版本、SHA 和制品的对应关系。
 
-Record unit ID/owner, version/tag, complete SHA, artifact digest, included tasks, environment, CI/job references, user-path acceptance, and rollback target/outcome. Do not overwrite published version/tag identities with different code or artifacts. Promote the same verified artifact from test to production; record a new candidate/build/version for a different artifact. Build success, merge success, or HTTP 200 alone does not establish production acceptance.
+记录单元 ID 与负责人、版本和 tag、完整 SHA、制品摘要、所含任务、环境、CI／作业引用、真实用户路径验收，以及回滚目标和结果。不得用不同代码或制品覆盖已发布版本、tag 的身份。测试晋级生产使用同一份已验证制品；产生不同制品时，记录新的候选号、构建号或版本号。构建成功、合并成功或 HTTP 200，均不能单独证明生产验收通过。
 
-A Git plan is not an atomic lock. If overlapping execution for a target/resource cannot be ruled out, pause those target-changing actions while reconciling owners and jobs; independent units may continue. These Git gates do not inspect live deployment state or enforce unit boundaries or chat identity.
+Git 计划不具备原子锁能力。如果无法排除同一目标或资源上的重叠执行，暂停会改变相关目标状态的操作，先协调负责人和作业；独立单元可以继续。本技能的 Git 校验不会检查实时部署状态，也不会强制执行单元边界或会话身份。
 
-If a unit owner is unavailable, leave its requests queued and continue independent work. Transfer only that unit through an explicit user instruction or authorized project decision: reconcile its active release/jobs first, record the new owner and scope in the canonical plan, and have the replacement verify it before acting. Never infer takeover from silence or change other units' owners as a side effect.
+单元负责人不可用时，将请求保留在队列中，并继续独立工作。只有用户明确指示或已获授权的项目决策允许时，才转交该单元：先核对活动发布和作业，在主干计划中记录新负责人及范围，再由接任者核实后执行。不得因对方沉默就推定可以接管，也不得顺带修改其他单元的归属。
 
-### Existing project plans
+### 已有项目计划
 
-Preserve existing plans and task records during `bind --update --refresh-skill`. A legacy `Deployment chat` assignment remains the owner of its previously designated scope; it is not an obstacle to adding independently owned units. Before a new split is used, record each affected unit and owner, reconcile active jobs and shared dependencies, and retain existing assignments that were not transferred. The command updates the vendored skill and managed instructions, not custom deployment plans, pipelines, or real chat permissions.
+执行 `bind --update --refresh-skill` 时，保留已有计划和任务记录。旧计划中指定的 `Deployment chat` 继续负责其原定范围；该归属不妨碍新增可独立负责的单元。采用新的职责拆分前，记录各受影响单元及负责人，核对活动作业和共享依赖，保留未被转交的既有归属。命令只更新项目内的技能副本和托管指令，不会更新自定义部署计划、流水线或真实会话权限。
 
-## Stop conditions
+## 停止条件
 
-Stop and report the exact mismatch when:
+遇到以下情况时停止，并报告具体不一致：
 
-- The checkout fetch or push URL differs from the supplied Git destination or project config.
-- The user has not supplied a Git URL for this project, or a command omits `--remote`.
-- The canonical remote head cannot be verified.
-- A canonical/shared worktree is dirty or does not match the remote head.
-- A task branch has the wrong prefix, base SHA, or ancestry.
-- The committed project map or plan is missing or still a scaffold in a structure-enabled project.
-- A remote task branch is missing or resolves to a different head SHA.
-- Ownership of existing local changes is unclear.
+- 工作副本的 fetch 或 push 地址，与用户提供的 Git 目标地址或项目配置不一致。
+- 用户尚未为该项目提供 Git 地址，或命令缺少 `--remote`。
+- 无法核实远端主干的最新提交。
+- 主干或共享 worktree 存在未提交改动，或未与远端最新提交保持一致。
+- 任务分支的前缀、基线 SHA 或祖先关系错误。
+- 启用项目结构的项目中，已提交的项目地图或计划缺失，或仍停留在模板状态。
+- 远端任务分支不存在，或其 HEAD SHA 与本地不同。
+- 已有本地改动的归属不明确。
 
-Do not repair these conditions with destructive cleanup, `reset --hard`, checkout-overwrite, or force-push.
+不要通过破坏性清理、`reset --hard`、强制检出覆盖或强推来修复这些情况。
