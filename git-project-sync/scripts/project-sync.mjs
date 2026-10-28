@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
@@ -19,7 +21,7 @@ const STRUCTURE_VERSION = 1;
 const DEFAULT_TASK_STATE_DIR = '.agent-sync/tasks';
 const PROJECT_MAP_PATH = '.agent-sync/project-map.md';
 const PROJECT_PLAN_PATH = '.agent-sync/plan.md';
-const COMMANDS = new Set(['bind', 'observe', 'start', 'task-init', 'resume', 'handoff']);
+const COMMANDS = new Set(['bind', 'observe', 'start', 'task-init', 'adopt', 'save', 'list', 'resume', 'handoff']);
 const TASK_STATUSES = new Set(['in-progress', 'blocked', 'ready-for-review', 'complete']);
 const MANAGED_START = '<!-- git-project-sync:start -->';
 const MANAGED_END = '<!-- git-project-sync:end -->';
@@ -33,7 +35,11 @@ function usage(message) {
       '  project-sync.mjs observe|start|resume|handoff --repo PATH --remote URL [--base SHA] ' +
       '[--remote-name NAME] [--canonical-branch NAME] ' +
       '[--branch-prefix PREFIX] [--json]\n' +
-      '  project-sync.mjs task-init --repo PATH --remote URL --base SHA [--title TEXT] [--json]',
+      '  project-sync.mjs task-init|adopt --repo PATH --remote URL [--base SHA] [--title TEXT] [--json]\n' +
+      '  project-sync.mjs save --repo PATH --remote URL --path FILE [--path FILE ...] ' +
+      '--message TEXT --verification TEXT [--base SHA] [--json]\n' +
+      '  project-sync.mjs list --repo PATH --remote URL [--all] [--json]\n' +
+      '  project-sync.mjs resume --repo PATH --remote URL [--task ID_OR_BRANCH] [--worktree PATH] [--json]',
   );
   process.exit(2);
 }
@@ -52,6 +58,12 @@ function parseArgs(argv) {
     title: null,
     update: false,
     refreshSkill: false,
+    paths: [],
+    message: null,
+    verification: null,
+    task: null,
+    worktree: null,
+    all: false,
     json: false,
   };
   for (let index = 1; index < argv.length; index += 1) {
@@ -59,6 +71,7 @@ function parseArgs(argv) {
     if (arg === '--json') options.json = true;
     else if (arg === '--update') options.update = true;
     else if (arg === '--refresh-skill') options.refreshSkill = true;
+    else if (arg === '--all') options.all = true;
     else {
       const value = argv[index + 1];
       if (!value || value.startsWith('--')) usage(`Missing value for ${arg}`);
@@ -69,13 +82,22 @@ function parseArgs(argv) {
       else if (arg === '--branch-prefix') options.branchPrefix = value;
       else if (arg === '--base') options.base = value;
       else if (arg === '--title') options.title = value;
+      else if (arg === '--path') options.paths.push(value);
+      else if (arg === '--message') options.message = value;
+      else if (arg === '--verification') options.verification = value;
+      else if (arg === '--task') options.task = value;
+      else if (arg === '--worktree') options.worktree = value;
       else usage(`Unknown argument: ${arg}`);
       index += 1;
     }
   }
-  if (command !== 'bind' && (options.update || options.refreshSkill)) {
-    usage('--update and --refresh-skill are valid only with bind.');
+  if ((command !== 'bind' && options.update) ||
+      (!['bind', 'adopt'].includes(command) && options.refreshSkill)) {
+    usage('--update is valid only with bind; --refresh-skill is valid with bind or adopt.');
   }
+  if (command !== 'save' && (options.paths.length || options.message || options.verification)) usage('Save options require save.');
+  if (command !== 'resume' && (options.task || options.worktree)) usage('--task and --worktree require resume.');
+  if (command !== 'list' && options.all) usage('--all requires list.');
   if (!options.remote) usage('A Git destination is required: pass --remote URL for every command.');
   validateSafeRemote(options.remote);
   return options;
@@ -86,11 +108,13 @@ function git(repo, args, timeout = 20_000) {
     cwd: repo,
     encoding: 'utf8',
     timeout,
+    maxBuffer: 16 * 1024 * 1024,
     windowsHide: true,
   });
   return {
     ok: result.status === 0,
     stdout: (result.stdout ?? '').trim(),
+    raw: result.stdout ?? '',
     timedOut: result.error?.code === 'ETIMEDOUT',
   };
 }
@@ -98,7 +122,8 @@ function git(repo, args, timeout = 20_000) {
 function hasEmbeddedCredential(value) {
   try {
     const parsed = new URL(value);
-    return Boolean(parsed.username || parsed.password || parsed.search || parsed.hash);
+    return Boolean((parsed.protocol !== 'ssh:' && parsed.username) ||
+      parsed.password || parsed.search || parsed.hash);
   } catch {
     return /^(?:https?|git):\/\/[^/]*:[^/@]+@/i.test(value) || /[?#]/.test(value);
   }
@@ -112,7 +137,7 @@ function normalizeRemote(value, repoRoot = process.cwd()) {
   const remote = value.trim();
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(remote)) {
     const parsed = new URL(remote);
-    if (parsed.protocol === 'file:') return stripGitSuffix(fileURLToPath(parsed));
+    if (parsed.protocol === 'file:') return resolve(fileURLToPath(parsed));
     const path = stripGitSuffix(parsed.pathname.replace(/^\/+/, ''));
     return `${parsed.host.toLowerCase()}/${path}`;
   }
@@ -121,7 +146,7 @@ function normalizeRemote(value, repoRoot = process.cwd()) {
     return `${scp[1].toLowerCase()}/${stripGitSuffix(scp[2])}`;
   }
   const absolute = isAbsolute(remote) ? remote : resolve(repoRoot, remote);
-  return stripGitSuffix(absolute);
+  return absolute;
 }
 
 function validateSafeRemote(value) {
@@ -137,7 +162,7 @@ function validBranchName(repo, branch) {
 
 function resolveCommit(repo, revision) {
   if (!revision) return null;
-  const result = git(repo, ['rev-parse', '--verify', `${revision}^{commit}`]);
+  const result = git(repo, ['rev-parse', '--verify', '--end-of-options', `${revision}^{commit}`]);
   return result.ok ? result.stdout : null;
 }
 
@@ -249,7 +274,8 @@ function taskStateTemplate(branch, base, title) {
   const safeTitle = title?.trim() || branch;
   if (/[\r\n]/.test(safeTitle)) throw new Error('Task title must be a single line.');
   return [
-    '<!-- git-project-sync-task:version=1 -->',
+    '<!-- git-project-sync-task:version=2 -->',
+    `<!-- git-project-sync-task:id=${randomUUID()} -->`,
     `<!-- git-project-sync-task:branch=${branch} -->`,
     `<!-- git-project-sync-task:base=${base} -->`,
     '<!-- git-project-sync-task:status=in-progress -->',
@@ -295,7 +321,57 @@ function taskStateTemplate(branch, base, title) {
 function taskMetadata(content) {
   const entries = [...content.matchAll(/<!-- git-project-sync-task:([a-z-]+)=([^>\r\n]+) -->/g)]
     .map((match) => [match[1], match[2].trim()]);
+  if (new Set(entries.map(([key]) => key)).size !== entries.length) {
+    throw new Error('Task record contains duplicate metadata fields.');
+  }
   return Object.fromEntries(entries);
+}
+
+function taskSection(content, name) {
+  const heading = `## ${name}`;
+  const lines = content.split(/\r?\n/);
+  const start = lines.findIndex((line) => line === heading);
+  if (start < 0) return null;
+  const end = lines.findIndex((line, index) => index > start && /^## /.test(line));
+  return lines.slice(start + 1, end < 0 ? undefined : end).join('\n').trim();
+}
+
+function sourceDigest(root, settings, revision) {
+  const tree = git(root, ['ls-tree', '-r', '-z', revision]);
+  if (!tree.ok) throw new Error('Cannot read the source tree for freshness verification.');
+  const prefix = `${settings.taskStateDir.replace(/\\/g, '/')}/`;
+  const entries = tree.raw.split('\0').filter(Boolean).filter((entry) => {
+    const path = entry.slice(entry.indexOf('\t') + 1);
+    return !path.startsWith(prefix);
+  });
+  return createHash('sha256').update(entries.join('\0')).digest('hex');
+}
+
+function validateTaskContent(content, report, requireVerification = true) {
+  const metadata = taskMetadata(content);
+  report.taskStatus = metadata.status ?? null;
+  report.taskId = metadata.id ?? null;
+  if (!['1', '2'].includes(metadata.version)) addIssue(report, 'task_state_version', 'Task record version is missing or unsupported.');
+  if (metadata.branch !== report.localBranch) addIssue(report, 'task_state_branch', 'Task record branch does not match the selected branch.');
+  if (metadata.base !== report.base) addIssue(report, 'task_state_base', 'Task record base does not match the verified base.');
+  if (!TASK_STATUSES.has(metadata.status)) addIssue(report, 'task_state_status', 'Task record has an invalid status.');
+  if (metadata.scaffold === 'true') addIssue(report, 'task_state_scaffold', 'Complete the task record and remove scaffold=true.');
+  const placeholders = {
+    Objective: 'Describe the user-visible outcome and scope.',
+    'Acceptance criteria': 'State observable completion conditions.',
+    Completed: 'Record committed results, not intentions.',
+    Verification: 'Record commands and outcomes tied to the current branch.',
+    'Blockers and unknowns': 'Record unresolved ownership, environment, authorization, or validation gaps.',
+    'Next step': 'Give the next agent one concrete starting action.',
+  };
+  for (const [name, placeholder] of Object.entries(placeholders)) {
+    const body = taskSection(content, name);
+    if (name === 'Verification' && !requireVerification && body !== null) continue;
+    if (!body || !body.replace(/<!--[^]*?-->|[\s*\-\[\]]/g, '') || body.includes(placeholder)) {
+      addIssue(report, 'task_state_incomplete', `Fill ## ${name} with actual task information.`);
+    }
+  }
+  return metadata;
 }
 
 function projectMapTemplate() {
@@ -392,6 +468,11 @@ function projectPlanTemplate() {
 
 function verifyCommittedProjectStructure(root, settings, report) {
   if (!settings.configPresent) return;
+  const config = git(root, ['show', `${report.head}:${CONFIG_NAME}`]);
+  if (!config.ok) addIssue(report, 'config_not_committed', `Commit ${CONFIG_NAME} with this task.`);
+  else if (configContent(validateConfig(JSON.parse(config.stdout))) !== configContent(settings)) {
+    addIssue(report, 'config_not_committed', 'The committed coordination config differs from the selected policy.');
+  }
   if (settings.structureVersion !== STRUCTURE_VERSION) {
     addWarning(report, 'legacy_project_structure',
       'This binding predates the project map and plan; adopt them with bind --update.');
@@ -405,7 +486,7 @@ function verifyCommittedProjectStructure(root, settings, report) {
       ['Describe the intended project outcome and current scope', 'Add a real milestone',
         'Add a verifiable result']],
   ]) {
-    const committed = git(root, ['show', `HEAD:${path}`]);
+    const committed = git(root, ['show', `${report.head}:${path}`]);
     if (!committed.ok) {
       addIssue(report, 'structure_missing', `Commit the ${label} at ${path}.`);
     } else if (!committed.stdout.includes(heading) ||
@@ -422,35 +503,47 @@ function verifyCommittedTaskState(root, settings, report) {
   if (!report.localBranch || report.localBranch === '(detached)' || !report.base) return;
   const relativePath = taskStatePath(settings, report.localBranch);
   report.taskStateFile = relativePath;
-  const committed = git(root, ['show', `HEAD:${relativePath}`]);
+  const committed = git(root, ['show', `${report.head}:${relativePath}`]);
   if (!committed.ok) {
     addIssue(report, 'task_state_missing', `Commit the task continuity record at ${relativePath}.`);
     return;
   }
-  const metadata = taskMetadata(committed.stdout);
-  report.taskStatus = metadata.status ?? null;
-  if (metadata.version !== '1') addIssue(report, 'task_state_version', 'Task continuity record version is missing or unsupported.');
-  if (metadata.branch !== report.localBranch) addIssue(report, 'task_state_branch', 'Task continuity record branch does not match the current branch.');
-  if (metadata.base !== report.base) addIssue(report, 'task_state_base', 'Task continuity record base does not match --base.');
-  if (!TASK_STATUSES.has(metadata.status)) addIssue(report, 'task_state_status', 'Task continuity record has an invalid status.');
-  if (metadata.scaffold === 'true') {
-    addIssue(report, 'task_state_scaffold', 'Replace the task record scaffold text and remove scaffold=true before handoff.');
-  }
-  for (const heading of [
-    '## Objective',
-    '## Acceptance criteria',
-    '## Completed',
-    '## Verification',
-    '## Blockers and unknowns',
-    '## Next step',
-  ]) {
-    if (!committed.stdout.includes(heading)) {
-      addIssue(report, 'task_state_incomplete', `Task continuity record is missing ${heading}.`);
-    }
+  const metadata = validateTaskContent(committed.stdout, report);
+  report.sourceDigest = sourceDigest(root, settings, report.head);
+  if (!/^[a-f0-9]{64}$/.test(metadata['source-digest'] ?? '')) {
+    addIssue(report, 'task_state_freshness_missing', 'Run save with explicit verification evidence to record the source digest.');
+  } else if (metadata['source-digest'] !== report.sourceDigest) {
+    addIssue(report, 'task_state_stale', 'Source changed after the task record was saved; update the record and run save.');
   }
 }
 
-function inspect(root, settings, command, baseInput) {
+function verifyRemoteUrls(root, settings, report) {
+  for (const push of [false, true]) {
+    const result = git(root, ['remote', 'get-url', ...(push ? ['--push'] : []), '--all', settings.remoteName]);
+    const key = push ? 'pushRemotes' : 'checkoutRemotes';
+    const label = push ? 'push' : 'fetch';
+    report[key] = [];
+    if (!result.ok || !result.stdout) {
+      addIssue(report, push ? 'push_remote_missing' : 'remote_missing', `Cannot resolve all ${label} URLs.`);
+      continue;
+    }
+    for (const url of result.stdout.split(/\r?\n/)) {
+      if (hasEmbeddedCredential(url)) {
+        addIssue(report, push ? 'embedded_push_credential' : 'embedded_remote_credential', `${label} URL contains credentials or parameters.`);
+        continue;
+      }
+      const normalized = normalizeRemote(url, root);
+      report[key].push(normalized);
+      if (normalized !== report.expectedRemote) {
+        addIssue(report, push ? 'push_remote_mismatch' : 'remote_mismatch', `Every ${label} URL must match the supplied destination.`);
+      }
+    }
+  }
+  report.normalizedCheckoutRemote = report.checkoutRemotes[0] ?? null;
+  report.normalizedPushRemote = report.pushRemotes[0] ?? null;
+}
+
+function inspect(root, settings, command, baseInput, { allowDirty = false } = {}) {
   const report = {
     ok: false,
     command,
@@ -479,28 +572,9 @@ function inspect(root, settings, command, baseInput) {
     warnings: [],
   };
 
-  const checkoutRemote = git(root, ['remote', 'get-url', settings.remoteName]);
-  if (!checkoutRemote.ok) {
-    addIssue(report, 'remote_missing', `Git remote ${settings.remoteName} does not exist.`);
-  } else if (hasEmbeddedCredential(checkoutRemote.stdout)) {
-    addIssue(report, 'embedded_remote_credential', 'The checkout remote URL contains embedded credentials or parameters.');
-  } else {
-    report.normalizedCheckoutRemote = normalizeRemote(checkoutRemote.stdout, root);
-    if (report.normalizedCheckoutRemote !== report.expectedRemote) {
-      addIssue(report, 'remote_mismatch', 'The checkout remote does not match the configured Git repository.');
-    }
-  }
-  const pushRemote = git(root, ['remote', 'get-url', '--push', settings.remoteName]);
-  if (!pushRemote.ok) {
-    addIssue(report, 'push_remote_missing', `Git push URL for ${settings.remoteName} could not be resolved.`);
-  } else if (hasEmbeddedCredential(pushRemote.stdout)) {
-    addIssue(report, 'embedded_push_credential', 'The checkout push URL contains embedded credentials or parameters.');
-  } else {
-    report.normalizedPushRemote = normalizeRemote(pushRemote.stdout, root);
-    if (report.normalizedPushRemote !== report.expectedRemote) {
-      addIssue(report, 'push_remote_mismatch', 'The checkout push URL does not match the configured Git destination.');
-    }
-  }
+  verifyRemoteUrls(root, settings, report);
+  // Do not contact an unverified destination, even for a read-only query.
+  if (report.issues.length) return report;
 
   const branch = git(root, ['symbolic-ref', '--short', '-q', 'HEAD']);
   report.localBranch = branch.ok && branch.stdout ? branch.stdout : '(detached)';
@@ -527,6 +601,13 @@ function inspect(root, settings, command, baseInput) {
     );
   } else report.remoteHead = canonical.sha;
 
+  if (report.remoteHead && command !== 'observe' && !resolveCommit(root, report.remoteHead)) {
+    const fetched = git(root, ['fetch', '--no-tags', settings.remoteName, `refs/heads/${settings.canonicalBranch}`]);
+    if (!fetched.ok || resolveCommit(root, 'FETCH_HEAD') !== report.remoteHead) {
+      addIssue(report, 'canonical_fetch_failed', 'Canonical history could not be pinned; retry after inspecting the remote.');
+    }
+  }
+
   if (report.head && report.remoteHead) {
     if (report.head === report.remoteHead) report.relationToRemoteHead = 'equal';
     else if (!resolveCommit(root, report.remoteHead)) {
@@ -541,13 +622,13 @@ function inspect(root, settings, command, baseInput) {
   }
 
   if (!settings.configPresent) {
-    if (command === 'observe') {
+    if (['observe', 'list', 'adopt'].includes(command)) {
       addWarning(report, 'project_unbound', `The project has no committed ${CONFIG_NAME}.`);
     } else {
       addIssue(report, 'project_unbound', `Bind and commit ${CONFIG_NAME} before cross-agent work.`);
     }
   }
-  verifyCommittedProjectStructure(root, settings, report);
+  if (!['adopt', 'save', 'list'].includes(command)) verifyCommittedProjectStructure(root, settings, report);
 
   if (command === 'observe' && report.localBranch === settings.canonicalBranch) {
     if (report.worktreeClean !== true) {
@@ -558,8 +639,10 @@ function inspect(root, settings, command, baseInput) {
     }
   }
 
-  if (command !== 'observe') {
-    if (report.worktreeClean !== true) addIssue(report, 'worktree_dirty', 'This gate requires a clean worktree.');
+  if (!['observe', 'list'].includes(command)) {
+    if (!allowDirty && !['adopt', 'save'].includes(command) && report.worktreeClean !== true) {
+      addIssue(report, 'worktree_dirty', 'This gate requires a clean worktree.');
+    }
     if (report.localBranch === '(detached)') addIssue(report, 'detached_head', 'Use a named task branch.');
     else if (report.localBranch === settings.canonicalBranch) {
       addIssue(report, 'canonical_branch_in_use', 'Do not develop or hand off directly on the canonical branch.');
@@ -567,11 +650,23 @@ function inspect(root, settings, command, baseInput) {
       addIssue(report, 'task_branch_prefix', `Task branches must start with ${settings.branchPrefix}.`);
     }
 
+    if (!baseInput && report.localBranch !== '(detached)') {
+      const path = join(root, taskStatePath(settings, report.localBranch));
+      if (existsSync(path)) baseInput = taskMetadata(readFileSync(path, 'utf8')).base;
+    }
+    if (!baseInput && ['start', 'task-init'].includes(command)) baseInput = report.remoteHead;
+    if (!baseInput && command === 'adopt' && report.remoteHead) {
+      const common = git(root, ['merge-base', report.head, report.remoteHead]);
+      if (common.ok) baseInput = common.stdout;
+    }
     report.base = resolveCommit(root, baseInput);
     if (!baseInput) addIssue(report, 'base_required', `--base is required for ${command}.`);
     else if (!report.base) addIssue(report, 'base_missing', 'The base revision is not a local commit.');
     else if (report.head && !isAncestor(root, report.base, report.head)) {
       addIssue(report, 'base_not_ancestor', 'The base commit is not an ancestor of HEAD.');
+    }
+    if (report.base && report.remoteHead && !isAncestor(root, report.base, report.remoteHead)) {
+      addIssue(report, 'base_not_canonical', 'The base commit must belong to the canonical branch history.');
     }
   }
 
@@ -630,6 +725,8 @@ function managedAgentsBlock() {
     'verify it matches the config and checkout fetch/push URLs before saving work.',
     'Read `.agent-sync/project-map.md`, `.agent-sync/plan.md`, and the current',
     'branch record in `.agent-sync/tasks/` before continuing another agent\'s work.',
+    'Use adopt for existing work, save with explicit file paths and verification',
+    'evidence, and list to discover remote tasks. Resume in a new isolated worktree.',
     'Development chats may commit, push, and run local checks independently.',
     'Before shared CI or deployment, verify each affected deployment unit and its',
     'single owning chat/thread in the latest canonical-branch plan. Independent',
@@ -669,11 +766,35 @@ function writeIfMissing(path, content, changed) {
   writeIfChanged(path, content, changed);
 }
 
+function assertManagedFile(root, path) {
+  const parts = relative(root, path).split(/[\\/]/);
+  if (parts.includes('..')) throw new Error('Managed file is outside the repository.');
+  for (let index = 1; index <= parts.length; index += 1) {
+    const target = join(root, ...parts.slice(0, index));
+    if (lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink()) {
+      throw new Error('Managed files cannot follow repository symlinks. Preserve them and resolve the target first.');
+    }
+  }
+  if (existsSync(path) && !lstatSync(path).isFile()) throw new Error('Managed target must be a regular file.');
+}
+
+function physicalPath(path) {
+  const missing = [];
+  let parent = resolve(path);
+  while (!existsSync(parent)) {
+    missing.unshift(basename(parent));
+    parent = dirname(parent);
+  }
+  return resolve(realpathSync(parent), ...missing);
+}
+
 function bindProject(root, options) {
   if (!options.remote) throw new Error('bind requires --remote.');
   validateSafeRemote(options.remote);
   const configPath = join(root, CONFIG_NAME);
   const currentConfig = existsSync(configPath) ? validateConfig(readJson(configPath)) : null;
+  const adopting = options.command === 'adopt';
+  if (adopting && currentConfig) settingsFor(root, options);
   const settings = validatePolicy(root, {
     version: SUPPORTED_VERSION,
     remote: options.remote,
@@ -685,25 +806,30 @@ function bindProject(root, options) {
     configPresent: false,
   });
 
-  if (currentConfig && configContent(currentConfig) !== configContent(settings) && !options.update) {
+  if (!adopting && currentConfig && configContent(currentConfig) !== configContent(settings) && !options.update) {
     throw new Error(`Existing ${CONFIG_NAME} differs; use --update only after reviewing the change.`);
   }
 
-  const preflight = inspect(root, settings, 'observe', null);
+  const preflight = inspect(root, settings, adopting ? 'adopt' : 'observe', options.base);
   preflight.issues = preflight.issues.filter((issue) => issue.code !== 'shared_canonical_dirty');
   const status = git(root, ['status', '--porcelain=v1', '--untracked-files=all']);
-  if (!status.ok || status.stdout) addIssue(preflight, 'bind_requires_clean_tree', 'Bind requires a clean worktree.');
-  if (preflight.head && preflight.remoteHead && preflight.head !== preflight.remoteHead) {
+  if (!adopting && (!status.ok || status.stdout)) addIssue(preflight, 'bind_requires_clean_tree', 'Bind requires a clean worktree.');
+  if (!adopting && preflight.head && preflight.remoteHead && preflight.head !== preflight.remoteHead) {
     addIssue(preflight, 'bind_head_mismatch', 'Bind must start at the current canonical remote head.');
   }
   preflight.ok = preflight.issues.length === 0;
   if (!preflight.ok) return { report: preflight, changed: [] };
+  const taskPath = adopting ? taskStatePath(settings, preflight.localBranch) : null;
+  if (taskPath && existsSync(join(root, taskPath))) {
+    throw new Error('This branch already has a task record; update it and use save.');
+  }
 
   const sourceRoot = dirname(dirname(fileURLToPath(import.meta.url)));
   const targetRoot = join(root, '.agents', 'skills', 'git-project-sync');
   const managedFiles = [
     ['SKILL.md', join(sourceRoot, 'SKILL.md'), join(targetRoot, 'SKILL.md')],
     ['project-sync.mjs', join(sourceRoot, 'scripts', 'project-sync.mjs'), join(targetRoot, 'scripts', 'project-sync.mjs')],
+    ['deployment.md', join(sourceRoot, 'references', 'deployment.md'), join(targetRoot, 'references', 'deployment.md')],
   ];
   for (const [label, source, target] of managedFiles) {
     if (!existsSync(source)) throw new Error(`Installed skill is missing ${label}.`);
@@ -711,6 +837,15 @@ function bindProject(root, options) {
     if (existsSync(target) && readFileSync(target, 'utf8') !== readFileSync(source, 'utf8') && !options.refreshSkill) {
       throw new Error(`Vendored ${label} differs; use --refresh-skill only after review.`);
     }
+  }
+
+  const agentsPath = join(root, 'AGENTS.md');
+  const agentsExisting = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : '';
+  const agentsContent = updateAgentsContent(agentsExisting);
+  const taskContent = adopting ? taskStateTemplate(preflight.localBranch, preflight.base, options.title) : null;
+  for (const path of [configPath, join(root, PROJECT_MAP_PATH), join(root, PROJECT_PLAN_PATH),
+    agentsPath, ...managedFiles.map(([, , target]) => target), ...(taskPath ? [join(root, taskPath)] : [])]) {
+    assertManagedFile(root, path);
   }
 
   const changed = [];
@@ -724,16 +859,16 @@ function bindProject(root, options) {
   const targetScript = join(targetRoot, 'scripts', 'project-sync.mjs');
   if (existsSync(targetScript)) chmodSync(targetScript, 0o755);
 
-  const agentsPath = join(root, 'AGENTS.md');
-  const agentsExisting = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : '';
-  writeIfChanged(agentsPath, updateAgentsContent(agentsExisting), changed);
+  writeIfChanged(agentsPath, agentsContent, changed);
+  if (taskPath) writeIfChanged(join(root, taskPath), taskContent, changed);
 
   return {
     report: {
       ...preflight,
       ok: true,
-      command: 'bind',
+      command: adopting ? 'adopt' : 'bind',
       configPresent: true,
+      taskStateFile: taskPath,
       issues: [],
       warnings: [],
     },
@@ -741,11 +876,258 @@ function bindProject(root, options) {
   };
 }
 
+function setTaskMetadata(content, key, value) {
+  const line = `<!-- git-project-sync-task:${key}=${value} -->`;
+  const pattern = new RegExp(`^<!-- git-project-sync-task:${key}=[^\\r\\n]* -->$`, 'm');
+  return pattern.test(content) ? content.replace(pattern, line) : `${line}\n${content}`;
+}
+
+function selectedPaths(root, options, taskPath) {
+  if (!options.paths.length) throw new Error('save requires explicit --path FILE selections; the task record is added automatically.');
+  const paths = [...new Set([...options.paths, taskPath])];
+  for (const path of paths) {
+    if (isAbsolute(path) || /[\\\r\n]/.test(path) || path.split('/').some((part) => !part || part === '.' || part === '..')) {
+      throw new Error('Save paths must be literal repository-relative file names.');
+    }
+    const absolute = join(root, path);
+    // Do not follow a parent symlink while reading or writing a record.
+    const parts = path.split('/');
+    for (let index = 1; index < parts.length; index += 1) {
+      const parent = join(root, ...parts.slice(0, index));
+      if (existsSync(parent) && lstatSync(parent).isSymbolicLink()) throw new Error('Save paths cannot traverse a symlink.');
+    }
+    if (existsSync(absolute) && lstatSync(absolute).isDirectory()) throw new Error('Select individual files, not directories.');
+    if (!existsSync(absolute) && !git(root, ['--literal-pathspecs', 'ls-files', '--error-unmatch', '--', path]).ok) {
+      throw new Error(`Selected file does not exist or is ignored: ${path}`);
+    }
+  }
+  if (lstatSync(join(root, taskPath)).isSymbolicLink()) throw new Error('The task record must be a regular file.');
+  return paths;
+}
+
+function saveTask(root, settings, options) {
+  const report = inspect(root, settings, 'save', options.base);
+  if (!report.ok) return { report, changed: [] };
+  if (!options.message?.trim() || !options.verification?.trim() || /[\r\n]/.test(options.message + options.verification)) {
+    throw new Error('save requires a single-line --message and --verification (actual evidence, or not-run with a reason).');
+  }
+  const taskPath = taskStatePath(settings, report.localBranch);
+  const absoluteTask = join(root, taskPath);
+  if (!existsSync(absoluteTask)) throw new Error('Create a task record with task-init or adopt before save.');
+  const paths = selectedPaths(root, options, taskPath);
+  const staged = git(root, ['diff', '--cached', '--name-only', '-z']);
+  if (!staged.ok) throw new Error('Cannot inspect staged changes.');
+  if (staged.raw.split('\0').filter(Boolean).some((path) => !paths.includes(path))) {
+    addIssue(report, 'unrelated_staged_changes', 'The index contains files outside --path selections; leave them untouched and resolve ownership first.');
+  }
+  const remote = git(root, ['ls-remote', '--heads', settings.remoteName, `refs/heads/${report.localBranch}`]);
+  if (!remote.ok) addIssue(report, 'task_remote_unverified', 'Cannot verify the remote task before saving.');
+  const remoteHead = remote.stdout.split(/\s/)[0];
+  if (remoteHead && !isAncestor(root, remoteHead, report.head)) {
+    addIssue(report, 'remote_task_ahead', 'Remote task work is not contained locally; fetch and review before saving.');
+  }
+  let content = readFileSync(absoluteTask, 'utf8').replace(/\r\n/g, '\n');
+  validateTaskContent(content, report, false);
+  if (report.issues.length) { report.ok = false; return { report, changed: [] }; }
+
+  // Only explicit paths enter the index. Failures leave selected work intact for inspection.
+  if (!git(root, ['--literal-pathspecs', 'add', '--', ...paths]).ok) throw new Error('Staging failed; inspect the selected paths and index before retrying.');
+  const tree = git(root, ['write-tree']);
+  if (!tree.ok) throw new Error('Cannot snapshot selected source changes.');
+  const digest = sourceDigest(root, settings, tree.stdout);
+  content = setTaskMetadata(content, 'version', '2');
+  if (!taskMetadata(content).id) content = setTaskMetadata(content, 'id', randomUUID());
+  content = setTaskMetadata(content, 'source-digest', digest);
+  const verification = `- Source digest: \`${digest}\`; ${options.verification.trim()}`;
+  const sectionStart = content.indexOf('## Verification\n');
+  if (sectionStart < 0) throw new Error('Add ## Verification before saving.');
+  const nextHeading = content.indexOf('\n## ', sectionStart + 1);
+  const end = nextHeading < 0 ? content.length : nextHeading;
+  const previousEvidence = taskSection(content, 'Verification')
+    .replace(/^\s*-?\s*Record commands and outcomes tied to the current branch\.\s*$/m, '').trim();
+  const evidence = previousEvidence.includes(verification)
+    ? previousEvidence : `${verification}${previousEvidence ? `\n\n${previousEvidence}` : ''}`;
+  content = `${content.slice(0, sectionStart)}## Verification\n\n${evidence}\n${content.slice(end)}`;
+  writeFileSync(absoluteTask, content, 'utf8');
+  if (!git(root, ['--literal-pathspecs', 'add', '--', taskPath]).ok) throw new Error('Cannot stage the task record.');
+  const candidate = git(root, ['write-tree']);
+  if (!candidate.ok) throw new Error('Cannot inspect the candidate tree.');
+  const candidateReport = { ...report, head: candidate.stdout, issues: [], warnings: [...report.warnings] };
+  verifyCommittedProjectStructure(root, settings, candidateReport);
+  verifyCommittedTaskState(root, settings, candidateReport);
+  if (!git(root, ['diff', '--cached', '--check']).ok) addIssue(candidateReport, 'staged_diff_invalid', 'Fix staged whitespace errors before committing.');
+  if (candidateReport.issues.length) {
+    candidateReport.ok = false;
+    return { report: candidateReport, changed: [absoluteTask] };
+  }
+  const before = report.head;
+  const hasChanges = !git(root, ['diff', '--cached', '--quiet']).ok;
+  if (hasChanges && !git(root, ['commit', '-m', options.message]).ok) {
+    throw new Error('Commit did not report success; inspect HEAD and the index before retrying. No push was attempted.');
+  }
+  const afterCommit = resolveCommit(root, 'HEAD');
+  const prePush = inspect(root, settings, 'save', report.base);
+  verifyCommittedProjectStructure(root, settings, prePush);
+  verifyCommittedTaskState(root, settings, prePush);
+  if (prePush.localBranch !== report.localBranch || prePush.head !== afterCommit) {
+    addIssue(prePush, 'save_head_changed', 'The selected branch or HEAD changed during save; inspect before pushing.');
+  }
+  prePush.ok = prePush.issues.length === 0;
+  if (!prePush.ok) return { report: { ...prePush, previousHead: before, savedHead: afterCommit, synchronized: false }, changed: [absoluteTask] };
+  if (!git(root, ['push', '--porcelain', settings.remoteName, `${afterCommit}:refs/heads/${report.localBranch}`]).ok) {
+    addIssue(prePush, 'push_failed', 'Push failed or its outcome is unknown. Keep the local commit, inspect the remote, and do not force-push.');
+    return { report: { ...prePush, ok: false, previousHead: before, savedHead: afterCommit, synchronized: false }, changed: [absoluteTask] };
+  }
+  const verified = inspect(root, settings, 'handoff', report.base, { allowDirty: true });
+  verified.command = 'save';
+  verified.previousHead = before;
+  verified.savedHead = afterCommit;
+  verified.synchronized = verified.ok;
+  verified.savedPaths = paths;
+  if (!verified.worktreeClean) addWarning(verified, 'unsaved_worktree_changes', 'Other worktree changes remain local; only the selected committed files were synchronized.');
+  return { report: verified, changed: [absoluteTask] };
+}
+
+function listTasks(root, settings, options) {
+  const report = inspect(root, settings, 'list', null);
+  report.tasks = [];
+  if (!report.ok) return report;
+  const refs = git(root, ['ls-remote', '--heads', settings.remoteName, `refs/heads/${settings.branchPrefix}*`]);
+  if (!refs.ok) {
+    addIssue(report, 'task_list_unverified', 'Cannot list remote task branches.');
+    report.ok = false;
+    return report;
+  }
+  const branches = refs.stdout.split(/\r?\n/).filter(Boolean).map((line) => {
+    const [head, ref] = line.split(/\s+/);
+    return { head, branch: ref.slice('refs/heads/'.length) };
+  });
+  if (branches.length) {
+    const fetched = git(root, ['fetch', '--no-tags', settings.remoteName, ...branches.map((task) => `refs/heads/${task.branch}`)]);
+    if (!fetched.ok) {
+      addIssue(report, 'task_fetch_failed', 'Remote tasks changed or could not be fetched; inspect and retry.');
+      report.ok = false;
+      return report;
+    }
+  }
+  for (const { head, branch } of branches) {
+    if (!resolveCommit(root, head)) {
+      addIssue(report, 'task_snapshot_changed', 'A listed remote commit is unavailable after fetch; rerun discovery.');
+      continue;
+    }
+    const recordPath = taskStatePath(settings, branch);
+    const record = git(root, ['show', `${head}:${recordPath}`]);
+    const merged = isAncestor(root, head, report.remoteHead);
+    const task = { branch, head, taskStateFile: recordPath, merged, issues: [], warnings: [], valid: false };
+    if (record.ok) {
+      try {
+        const metadata = taskMetadata(record.stdout);
+        Object.assign(task, {
+          id: metadata.id ?? null,
+          base: metadata.base ?? null,
+          status: metadata.status ?? 'unknown',
+          title: record.stdout.match(/^# Task: (.+)$/m)?.[1] ?? branch,
+          nextStep: taskSection(record.stdout, 'Next step'),
+        });
+        const committedConfig = git(root, ['show', `${head}:${CONFIG_NAME}`]);
+        if (!committedConfig.ok) throw new Error('Missing committed task binding.');
+        const taskSettings = validatePolicy(root, { ...validateConfig(JSON.parse(committedConfig.stdout)), configPresent: true });
+        const check = { ...task, localBranch: branch, head, issues: [], warnings: [] };
+        if (normalizeRemote(taskSettings.remote, root) !== report.expectedRemote ||
+            taskSettings.canonicalBranch !== settings.canonicalBranch || taskSettings.branchPrefix !== settings.branchPrefix ||
+            taskSettings.taskStateDir !== settings.taskStateDir) {
+          addIssue(check, 'task_policy_mismatch', 'Task binding differs from the selected repository policy.');
+        }
+        verifyCommittedProjectStructure(root, taskSettings, check);
+        verifyCommittedTaskState(root, taskSettings, check);
+        if (!task.base || !isAncestor(root, task.base, head) || !isAncestor(root, task.base, report.remoteHead)) {
+          addIssue(check, 'base_not_canonical', 'Task baseline is not shared with the canonical branch.');
+        }
+        task.issues = check.issues;
+        task.valid = task.issues.length === 0;
+      } catch {
+        task.issues.push({ code: 'task_record_invalid', message: 'Task record or binding cannot be parsed.' });
+      }
+    } else {
+      task.status = 'unrecorded';
+      task.title = branch;
+      task.issues.push({ code: 'task_state_missing', message: 'No committed task record on this branch.' });
+    }
+    if (options.all || (!merged && task.status !== 'complete')) report.tasks.push(task);
+  }
+  const active = report.tasks.filter((task) => !task.merged && task.status !== 'complete');
+  // An invalid/unrecorded alternative still creates ambiguity; never silently ignore it.
+  report.suggestedTask = active.length === 1 && active[0].valid ? active[0].branch : null;
+  report.ok = report.issues.length === 0;
+  return report;
+}
+
+function resumeTask(root, settings, options) {
+  const current = git(root, ['symbolic-ref', '--short', '-q', 'HEAD']).stdout;
+  if (!options.task && !options.worktree && current !== settings.canonicalBranch) {
+    return inspect(root, settings, 'resume', options.base);
+  }
+  const discovery = listTasks(root, settings, { ...options, all: true });
+  discovery.command = 'resume';
+  if (!discovery.ok) return discovery;
+  const active = discovery.tasks.filter((task) => !task.merged && task.status !== 'complete');
+  const matches = options.task
+    ? discovery.tasks.filter((task) => task.branch === options.task || task.id === options.task)
+    : active;
+  if (matches.length !== 1) {
+    addIssue(discovery, 'task_selection_required', 'Select one remote task with --task ID_OR_BRANCH; no worktree was changed.');
+    discovery.ok = false;
+    return discovery;
+  }
+  const task = matches[0];
+  discovery.selectedTask = task;
+  if (!task.valid) {
+    addIssue(discovery, 'selected_task_invalid', 'The selected task has unresolved synchronization issues; repair its record before resume.');
+    discovery.ok = false;
+    return discovery;
+  }
+  if (options.base && resolveCommit(root, options.base) !== task.base) {
+    addIssue(discovery, 'task_state_base', '--base differs from the selected remote task record.');
+    discovery.ok = false;
+    return discovery;
+  }
+  if (current === task.branch && !options.worktree) return inspect(root, settings, 'resume', task.base);
+  if (!options.worktree) {
+    addIssue(discovery, 'worktree_required', 'Provide --worktree PATH to resume without switching or overwriting the current checkout.');
+    discovery.ok = false;
+    return discovery;
+  }
+  const path = physicalPath(options.worktree);
+  const worktrees = git(root, ['worktree', 'list', '--porcelain', '-z']);
+  if (!worktrees.ok) throw new Error('Cannot inspect existing worktree ownership.');
+  const roots = worktrees.raw.split('\0').filter((part) => part.startsWith('worktree '))
+    .map((part) => physicalPath(part.slice('worktree '.length)));
+  if (roots.some((work) => path === work || path.startsWith(`${work}/`)) || existsSync(path)) {
+    throw new Error('Resume requires a new isolated worktree path outside the current checkout.');
+  }
+  const latest = remoteBranchSha(root, settings.remoteName, task.branch);
+  if (!latest.ok || latest.sha !== task.head) {
+    addIssue(discovery, 'task_snapshot_changed', 'The selected remote task changed during discovery; rerun resume.');
+    discovery.ok = false;
+    return discovery;
+  }
+  const existing = resolveCommit(root, `refs/heads/${task.branch}`);
+  if (existing && existing !== task.head) throw new Error('The local task branch differs from the selected remote commit; preserve it and reconcile first.');
+  const added = git(root, ['worktree', 'add', ...(existing ? [] : ['-b', task.branch]), path, existing ? task.branch : task.head]);
+  if (!added.ok) throw new Error('Cannot create the isolated worktree; the branch may already be owned by another worktree. No branch was reset.');
+  const resumedSettings = settingsFor(path, options);
+  const result = inspect(path, resumedSettings, 'resume', task.base);
+  result.selectedTask = task;
+  result.resumedWorktree = path;
+  return result;
+}
+
 function initializeTask(root, settings, options) {
   const report = inspect(root, settings, 'task-init', options.base);
   if (!report.ok) return { report, changed: [] };
   const relativePath = taskStatePath(settings, report.localBranch);
   const absolutePath = join(root, ...relativePath.split('/'));
+  assertManagedFile(root, absolutePath);
   if (existsSync(absolutePath)) {
     throw new Error(`Task continuity record already exists: ${relativePath}`);
   }
@@ -779,6 +1161,15 @@ function printReport(report, json, changed = []) {
     if (report.taskStatus) console.log(`task status: ${report.taskStatus}`);
     if (report.projectMap) console.log(`project map: ${report.projectMap}`);
     if (report.projectPlan) console.log(`project plan: ${report.projectPlan}`);
+    if (report.sourceDigest) console.log(`source digest: ${report.sourceDigest}`);
+    if (report.synchronized !== undefined) console.log(`synchronized: ${report.synchronized}`);
+    if (report.resumedWorktree) console.log(`resumed worktree: ${report.resumedWorktree}`);
+    for (const task of report.tasks ?? []) {
+      console.log(`TASK ${task.id ?? task.branch} [${task.status}] ${task.title} (${task.valid ? 'valid' : 'needs repair'})`);
+      console.log(`  branch: ${task.branch}; head: ${task.head}; record: ${task.taskStateFile}`);
+      if (task.nextStep) console.log(`  next: ${task.nextStep.replace(/\s+/g, ' ')}`);
+      for (const issue of task.issues) console.log(`  ISSUE ${issue.code}: ${issue.message}`);
+    }
     for (const path of relativeChanged) console.log(`CHANGED ${path}`);
     for (const warning of report.warnings) console.log(`WARNING ${warning.code}: ${warning.message}`);
     for (const issue of report.issues) console.log(`BLOCKER ${issue.code}: ${issue.message}`);
@@ -790,12 +1181,22 @@ function main() {
   try {
     const options = parseArgs(process.argv.slice(2));
     const root = gitRoot(options.repo);
-    if (options.command === 'bind') {
+    if (['bind', 'adopt'].includes(options.command)) {
       const result = bindProject(root, options);
       printReport(result.report, options.json, result.changed);
       return;
     }
     const settings = settingsFor(root, options);
+    if (options.command === 'save') {
+      const result = saveTask(root, settings, options);
+      printReport(result.report, options.json, result.changed);
+      return;
+    }
+    if (options.command === 'list' || options.command === 'resume') {
+      const report = options.command === 'list' ? listTasks(root, settings, options) : resumeTask(root, settings, options);
+      printReport(report, options.json);
+      return;
+    }
     if (options.command === 'task-init') {
       const result = initializeTask(root, settings, options);
       printReport(result.report, options.json, result.changed);

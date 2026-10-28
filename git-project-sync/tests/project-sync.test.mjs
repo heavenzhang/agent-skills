@@ -170,9 +170,11 @@ function exerciseGitWorkflow(deploymentLayout) {
       .replace('Record unresolved ownership, environment, authorization, or validation gaps.', 'No blocker.')
       .replace('Give the next agent one concrete starting action.', 'Fetch this branch and run resume.');
     writeFileSync(taskFile, taskText);
-    git(['add', '.agent-sync/tasks'], work);
-    git(['commit', '--quiet', '-m', 'save task continuity'], work);
-    git(['push', '--quiet', '-u', 'origin', 'codex/continue-task'], work);
+    const saved = run('node', [vendored, 'save', '--repo', work, '--remote', remote,
+      '--path', taskFile.slice(work.length + 1), '--message', 'save task continuity',
+      '--verification', 'Start gate passed; this fixture changes only the task record.', '--json'], work);
+    assert.equal(saved.status, 0, saved.stdout + saved.stderr);
+    assert.equal(JSON.parse(saved.stdout).synchronized, true);
     for (const command of ['handoff', 'resume']) {
       const result = run('node', [vendored, command, '--repo', work, '--remote', remote,
         '--base', base], work);
