@@ -6,12 +6,16 @@ import {
   chmodSync,
   existsSync,
   lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
@@ -905,6 +909,60 @@ function selectedPaths(root, options, taskPath) {
   return paths;
 }
 
+function commitSelectedTree(root, tree, message) {
+  const originalHooks = git(root, ['rev-parse', '--git-path', 'hooks']);
+  if (!originalHooks.ok) throw new Error('Cannot resolve the project hook configuration.');
+  const temporary = mkdtempSync(join(tmpdir(), 'git-project-sync-hooks-'));
+  const violation = join(temporary, 'index-changed.json');
+  const runner = join(temporary, 'run-hook.mjs');
+  const settings = { root, tree, hooks: resolve(root, originalHooks.stdout), violation, temporary };
+  const shellQuote = (value) => `'${value.replace(/'/g, `'"'"'`)}'`;
+  const shellPath = (value) => process.platform === 'win32' ? value.replace(/\\/g, '/') : value;
+  try {
+    writeFileSync(runner, `import { spawnSync } from 'node:child_process';
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+const config = ${JSON.stringify(settings)};
+const [hook, ...args] = process.argv.slice(2);
+const stdinPath = config.temporary + '/stdin-' + process.pid;
+writeFileSync(stdinPath, readFileSync(0));
+let original;
+try {
+  original = spawnSync('git', ['-c', 'core.hooksPath=' + config.hooks,
+    'hook', 'run', '--ignore-missing', '--to-stdin=' + stdinPath, hook, '--', ...args],
+    { cwd: config.root, stdio: 'inherit' });
+} finally {
+  unlinkSync(stdinPath);
+}
+if (original.error || original.status !== 0) process.exit(original.status || 1);
+if (['pre-commit', 'prepare-commit-msg', 'commit-msg'].includes(hook)) {
+  const current = spawnSync('git', ['write-tree'], { cwd: config.root, encoding: 'utf8' });
+  if (current.status !== 0 || current.stdout.trim() !== config.tree) {
+    writeFileSync(config.violation, JSON.stringify({ hook }));
+    process.stderr.write('Git project sync: hook changed the reviewed index; no commit is allowed.\\n');
+    process.exit(97);
+  }
+}
+`, 'utf8');
+    const hooks = new Set(['pre-commit', 'prepare-commit-msg', 'commit-msg', 'post-commit']);
+    if (existsSync(settings.hooks)) {
+      for (const entry of readdirSync(settings.hooks, { withFileTypes: true })) {
+        const name = process.platform === 'win32' ? entry.name.replace(/\.exe$/i, '') : entry.name;
+        if ((entry.isFile() || entry.isSymbolicLink()) && /^[a-z][a-z0-9-]*$/.test(name)) hooks.add(name);
+      }
+    }
+    for (const hook of hooks) {
+      const wrapper = `#!/bin/sh\nexec ${shellQuote(shellPath(process.execPath))} ${shellQuote(shellPath(runner))} ${shellQuote(hook)} "$@"\n`;
+      writeFileSync(join(temporary, hook), wrapper, { mode: 0o755 });
+    }
+    // Run every existing commit hook through Git itself, preserving its platform execution rules.
+    // A guard follows each pre-commit phase, before Git can create the actual commit.
+    const result = git(root, ['-c', `core.hooksPath=${temporary}`, 'commit', '-m', message], 0);
+    return { ...result, indexChangedByHook: existsSync(violation) ? readJson(violation).hook : null };
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+}
+
 function saveTask(root, settings, options) {
   const report = inspect(root, settings, 'save', options.base);
   if (!report.ok) return { report, changed: [] };
@@ -962,8 +1020,15 @@ function saveTask(root, settings, options) {
   }
   const before = report.head;
   const hasChanges = !git(root, ['diff', '--cached', '--quiet']).ok;
-  if (hasChanges && !git(root, ['commit', '-m', options.message]).ok) {
-    throw new Error('Commit did not report success; inspect HEAD and the index before retrying. No push was attempted.');
+  if (hasChanges) {
+    const committed = commitSelectedTree(root, candidate.stdout, options.message);
+    if (!committed.ok) {
+      addIssue(report, committed.indexChangedByHook ? 'commit_hook_changed_index' : 'commit_failed',
+        committed.indexChangedByHook
+          ? `The ${committed.indexChangedByHook} hook changed the reviewed index. No push was attempted; preserve and review staged work before retrying.`
+          : 'Commit did not report success. Inspect HEAD and the index before retrying; no push was attempted.');
+      return { report: { ...report, ok: false, previousHead: before, savedHead: resolveCommit(root, 'HEAD'), synchronized: false }, changed: [absoluteTask] };
+    }
   }
   const afterCommit = resolveCommit(root, 'HEAD');
   const prePush = inspect(root, settings, 'save', report.base);

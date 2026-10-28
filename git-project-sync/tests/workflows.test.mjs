@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -361,4 +361,91 @@ test('a commit hook changing the push destination cannot cause a push to that de
   issue(result, 'push_remote_mismatch');
   assert.equal(result.data.synchronized, false);
   assert.equal(git(['for-each-ref', '--format=%(refname)', 'refs/heads'], f.other), '');
+});
+
+for (const kind of ['file', 'dangling-file', 'parent']) {
+  test(`adopt rejects ${kind} symlinks before any project or external file is changed`, (t) => {
+    const f = fixture(t, false);
+    git(['switch', '-q', '-c', 'codex/existing'], f.a);
+    const external = join(f.root, 'shared');
+    mkdirSync(external);
+    const note = join(external, 'rules.md');
+    writeFileSync(note, 'shared rules must remain intact\n');
+    if (kind === 'parent') symlinkSync(external, join(f.a, '.agent-sync'));
+    else symlinkSync(kind === 'file' ? note : join(external, 'missing.md'), join(f.a, 'AGENTS.md'));
+    const before = git(['rev-parse', 'HEAD'], f.a);
+    const result = cli(f, 'adopt');
+    assert.equal(result.code, 2, JSON.stringify(result.data));
+    assert.match(result.stderr, /symlinks/);
+    assert.equal(readFileSync(note, 'utf8'), 'shared rules must remain intact\n');
+    assert.equal(existsSync(join(external, 'missing.md')), false);
+    assert.equal(existsSync(join(external, 'project-map.md')), false);
+    assert.equal(existsSync(join(f.a, '.agent-sync.json')), false);
+    assert.equal(existsSync(join(f.a, '.agents')), false);
+    assert.equal(git(['rev-parse', 'HEAD'], f.a), before);
+  });
+}
+
+for (const phase of ['pre-commit', 'prepare-commit-msg', 'commit-msg']) {
+  test(`${phase} cannot add an unselected user file to a commit or a later retry`, (t) => {
+    const f = fixture(t);
+    writeFileSync(join(f.a, 'user-work.txt'), 'existing user baseline\n');
+    git(['add', 'user-work.txt'], f.a);
+    git(['commit', '-q', '-m', 'user baseline'], f.a);
+    git(['push', '-q', 'origin', 'main'], f.a);
+    f.base = git(['rev-parse', 'HEAD'], f.a);
+    task(f);
+    writeFileSync(join(f.a, 'source.txt'), 'selected task work\n');
+    writeFileSync(join(f.a, 'user-work.txt'), 'unselected existing user work\n');
+    const hook = join(f.a, '.git/hooks', phase);
+    writeFileSync(hook, '#!/bin/sh\ngit add -- user-work.txt\n', { mode: 0o755 });
+    const before = git(['rev-parse', 'HEAD'], f.a);
+    const result = save(f);
+    issue(result, 'commit_hook_changed_index');
+    assert.equal(result.data.synchronized, false);
+    assert.equal(git(['rev-parse', 'HEAD'], f.a), before);
+    assert.equal(readFileSync(join(f.a, 'user-work.txt'), 'utf8'), 'unselected existing user work\n');
+    assert.equal(git(['ls-remote', 'origin', 'refs/heads/codex/task'], f.a), '');
+    rmSync(hook);
+    issue(save(f), 'unrelated_staged_changes');
+    // The user explicitly resolves only the index; their file contents remain local.
+    git(['restore', '--staged', '--', 'user-work.txt'], f.a);
+    passed(save(f));
+    assert.equal(git(['show', 'codex/task:user-work.txt'], f.remote), 'existing user baseline');
+    assert.equal(readFileSync(join(f.a, 'user-work.txt'), 'utf8'), 'unselected existing user work\n');
+  });
+}
+
+test('custom hook paths containing spaces and quotes preserve existing checks and commit message hooks', (t) => {
+  const f = fixture(t);
+  task(f);
+  const hooks = join(f.root, "project hooks' directory");
+  mkdirSync(hooks);
+  git(['config', 'core.hooksPath', hooks], f.a);
+  writeFileSync(join(hooks, 'commit-msg'), '#!/bin/sh\nprintf "\\nchecked by existing hook\\n" >> "$1"\n', { mode: 0o755 });
+  passed(save(f));
+  assert.match(git(['log', '-1', '--format=%B'], f.a), /checked by existing hook/);
+  const checkedHook = join(hooks, 'pre-commit');
+  writeFileSync(checkedHook, '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  writeFileSync(join(f.a, 'source.txt'), 'another selected change\n');
+  const before = git(['rev-parse', 'HEAD'], f.a);
+  issue(save(f), 'commit_failed');
+  assert.equal(git(['rev-parse', 'HEAD'], f.a), before);
+  rmSync(checkedHook);
+  passed(save(f));
+});
+
+test('reference-transaction hooks retain their stdin and can reject the actual commit', (t) => {
+  const f = fixture(t);
+  task(f);
+  const hook = join(f.a, '.git/hooks/reference-transaction');
+  writeFileSync(hook, '#!/bin/sh\ncat >> "$PWD/reference-input.log"\nif test "$1" = prepared; then exit 1; fi\n', { mode: 0o755 });
+  const before = git(['rev-parse', 'HEAD'], f.a);
+  const rejected = save(f);
+  issue(rejected, 'commit_failed');
+  assert.equal(git(['rev-parse', 'HEAD'], f.a), before);
+  assert.equal(git(['ls-remote', 'origin', 'refs/heads/codex/task'], f.a), '');
+  assert.match(readFileSync(join(f.a, 'reference-input.log'), 'utf8'), /refs\/heads\/codex\/task/);
+  rmSync(hook);
+  passed(save(f));
 });
