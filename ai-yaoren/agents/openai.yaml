@@ -1,8 +1,8 @@
 interface:
   display_name: "AI Yaoren · 赛博摇人"
-  short_description: "按实时调用原则与实际能力调度 AIRouter 外部模型和宿主智能体"
+  short_description: "读取后台场景、类别与优先级，调度模型子任务并验收"
   brand_color: "#2563EB"
-  default_prompt: "Use $ai-yaoren to read the live AIRouter user policy, choose suitable external or host-native models and actual tool executors, then verify and integrate the results."
+  default_prompt: "Use $ai-yaoren to read the published AIRouter task rules, model categories and priorities, select authorized models and actual tool executors, then verify and integrate the results."
 
 policy:
   allow_implicit_invocation: true
